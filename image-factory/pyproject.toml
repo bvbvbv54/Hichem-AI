@@ -1,0 +1,67 @@
+[project]
+name = "image-factory"
+version = "1.0.0"
+description = "Set-and-Forget AI Image Generation Platform"
+requires-python = ">=3.12"
+authors = [
+    {name = "ImageFactory Team"}
+]
+
+[project.optional-dependencies]
+api = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "httpx>=0.27.0",
+    "python-multipart>=0.0.12",
+    "slowapi>=0.1.9",
+    "google-api-python-client>=2.130.0",
+    "google-auth-oauthlib>=1.2.0",
+    "google-auth-httplib2>=0.2.0",
+]
+worker = [
+    "celery>=5.4.0",
+    "redis>=5.2.0",
+    "httpx>=0.27.0",
+    "anthropic>=0.45.0",
+    "boto3>=1.35.0",
+    "Pillow>=11.0.0",
+    "aiofiles>=24.1.0",
+    "beautifulsoup4>=4.12.0",
+    "openpyxl>=3.1.0",
+    "google-generativeai>=0.7.0",
+    "Pillow>=11.0.0",
+]
+all = [
+    "image-factory[api,worker]",
+    "psycopg2-binary>=2.9.10",
+    "asyncpg>=0.30.0",
+    "alembic>=1.14.0",
+    "pydantic-settings>=2.6.0",
+    "python-dotenv>=1.0.1",
+    "structlog>=24.4.0",
+    "tenacity>=9.0.0",
+    "pydantic>=2.10.0",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "beautifulsoup4>=4.12.0",
+    "openpyxl>=3.1.0",
+]
+
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-select = ["I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.setuptools.packages.find]
+include = ["api*", "configs*", "database*", "models*", "services*", "tasks*", "workers*"]
+
+[build-system]
+requires = ["setuptools>=75.0.0"]
+build-backend = "setuptools.build_meta"

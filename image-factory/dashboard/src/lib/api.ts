@@ -1,0 +1,225 @@
+const API_BASE = "/api/v1";
+
+class ApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+    this.name = "ApiError";
+  }
+}
+
+async function getToken(): Promise<string | null> {
+  if (typeof window === "undefined") return null;
+  const stored = localStorage.getItem("auth_session");
+  if (!stored) return null;
+  try {
+    const parsed = JSON.parse(stored);
+    return parsed?.state?.token ?? parsed?.token ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function request<T>(
+  path: string,
+  options: RequestInit = {}
+): Promise<T> {
+  const token = await getToken();
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(options.headers as Record<string, string>),
+  };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  const response = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers,
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new ApiError(
+      body || `Request failed: ${response.status}`,
+      response.status
+    );
+  }
+
+  return response.json();
+}
+
+function buildQuery(params: Record<string, string | number | boolean | undefined>): string {
+  const entries = Object.entries(params).filter(([_, v]) => v !== undefined);
+  if (entries.length === 0) return "";
+  return "?" + entries.map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`).join("&");
+}
+
+export const api = {
+  getToken,
+
+  // Auth
+  login: (email: string, password: string) =>
+    request<{ token: string; user: any }>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    }),
+
+  register: (name: string, email: string, password: string) =>
+    request<{ token: string; user: any }>("/auth/register", {
+      method: "POST",
+      body: JSON.stringify({ name, email, password }),
+    }),
+
+  forgotPassword: (email: string) =>
+    request<{ message: string }>("/auth/forgot-password", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    }),
+
+  resetPassword: (token: string, password: string) =>
+    request<{ message: string }>("/auth/reset-password", {
+      method: "POST",
+      body: JSON.stringify({ token, password }),
+    }),
+
+  getProfile: () => request<any>("/auth/me"),
+
+  // API Keys
+  getApiKeys: () => request<any[]>("/users/api-keys"),
+  createApiKey: (name: string) =>
+    request<{ key: string; id: string }>("/users/api-keys", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }),
+  deleteApiKey: (id: string) =>
+    request<void>(`/users/api-keys/${id}`, { method: "DELETE" }),
+
+  // Dashboard
+  getDashboardStats: () => request<any>("/dashboard/stats"),
+  getActiveJobs: () => request<any[]>("/dashboard/active"),
+  getSystemStatus: () => request<any>("/dashboard/status"),
+  getQueueInfo: () => request<any>("/dashboard/queue"),
+
+  // Projects
+  listProjects: (params?: { status?: string; limit?: number; offset?: number }) =>
+    request<{ projects: any[]; total: number }>(
+      `/projects${buildQuery(params || {})}`
+    ),
+
+  getProject: (id: string) => request<any>(`/projects/${id}`),
+  createProject: (data: { name: string; description?: string }) =>
+    request<any>("/projects", { method: "POST", body: JSON.stringify(data) }),
+  deleteProject: (id: string) =>
+    request<void>(`/projects/${id}`, { method: "DELETE" }),
+
+  // Products within a project
+  getProjectProducts: (projectId: string, params?: { status?: string; limit?: number; offset?: number }) =>
+    request<{ products: any[]; total: number }>(
+      `/projects/${projectId}/products${buildQuery(params || {})}`
+    ),
+
+  getProduct: (projectId: string, productId: string) =>
+    request<any>(`/projects/${projectId}/products/${productId}`),
+
+  // Upload
+  uploadFile: async (file: File, projectId: string) => {
+    const token = await getToken();
+    const form = new FormData();
+    form.append("file", file);
+    form.append("project_id", projectId);
+    const response = await fetch(`${API_BASE}/products/upload`, {
+      method: "POST",
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: form,
+    });
+    if (!response.ok) {
+      const body = await response.text();
+      throw new ApiError(body || `Upload failed: ${response.status}`, response.status);
+    }
+    return response.json();
+  },
+
+  // Submit generation with user config
+  submitGeneration: async (data: {
+    batch_id: string;
+    project_id?: string;
+    num_images_per_product: number;
+    image_descriptions: string[];
+    prompt_template?: string;
+  }) => request<any>("/products/generate", {
+    method: "POST",
+    body: JSON.stringify(data),
+  }),
+
+  // Assets
+  listAssets: (params?: {
+    project_id?: string;
+    status?: string;
+    search?: string;
+    limit?: number;
+    offset?: number;
+  }) =>
+    request<{ assets: any[]; total: number }>(
+      `/assets${buildQuery(params || {})}`
+    ),
+
+  getAsset: (id: string) => request<any>(`/assets/${id}`),
+
+  // Jobs
+  listJobs: (params?: {
+    status?: string;
+    project?: string;
+    limit?: number;
+    offset?: number;
+  }) =>
+    request<{ jobs: any[]; total: number }>(
+      `/jobs${buildQuery(params || {})}`
+    ),
+
+  getJob: (id: string) => request<any>(`/jobs/${id}`),
+  retryJob: (id: string) =>
+    request<any>(`/jobs/${id}/retry`, { method: "POST" }),
+  cancelJob: (id: string) =>
+    request<any>(`/jobs/${id}/cancel`, { method: "POST" }),
+
+  // Analytics
+  getAnalytics: (params?: { days?: number }) =>
+    request<any>(`/analytics${buildQuery(params || {})}`),
+
+  // Admin
+  getAdminStats: () => request<any>("/admin/stats"),
+  listUsers: () => request<{ users: any[] }>("/admin/users"),
+  getAdminNotifications: () => request<{ notifications: any[] }>("/admin/notifications"),
+  clearAdminNotifications: () => request<void>("/admin/notifications", { method: "DELETE" }),
+
+  // Google Drive
+  startDriveAuth: () => request<{ auth_url: string }>("/google-drive/auth/start"),
+  getDriveStatus: () => request<any>("/google-drive/auth/status"),
+  listDriveFiles: (folderId?: string) =>
+    request<any>(`/google-drive/list${folderId ? `?folder_id=${folderId}` : ""}`),
+
+  // Notifications
+  getNotifications: (params?: { unread_only?: boolean }) =>
+    request<{ notifications: any[]; unread_count: number }>(
+      `/notifications${buildQuery(params || {})}`
+    ),
+
+  markNotificationRead: (id: string) =>
+    request<void>(`/notifications/${id}/read`, { method: "POST" }),
+
+  markAllNotificationsRead: () =>
+    request<void>("/notifications/read-all", { method: "POST" }),
+
+  // Templates
+  getTemplates: (category?: string) =>
+    request<{ templates: any[] }>(
+      `/templates${category ? `?category=${category}` : ""}`
+    ),
+
+  // Verification
+  startSmokeTest: () => request<any>("/verification/smoke-test", { method: "POST" }),
+  getSmokeTestStatus: () => request<any>("/verification/smoke-test/status"),
+  getSmokeTestLatest: () => request<any>("/verification/smoke-test/latest"),
+  runDryRun: () => request<any>("/verification/dry-run", { method: "POST" }),
+  getSystemReadiness: () => request<any>("/verification/ready"),
+};

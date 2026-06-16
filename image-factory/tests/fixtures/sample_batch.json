@@ -1,0 +1,12 @@
+[
+  {"url": "https://example.com/product/1", "product_name": "Product 1", "priority": 1},
+  {"url": "https://example.com/product/2", "product_name": "Product 2", "priority": 2},
+  {"url": "https://example.com/product/3", "product_name": "Product 3", "priority": 0},
+  {"url": "", "product_name": "Empty URL", "priority": 0},
+  {"url": "not-a-url", "product_name": "Bad URL", "priority": 0},
+  {"url": "https://example.com/product/1", "product_name": "Duplicate", "priority": 0},
+  {"url": "https://example.com/product/4", "product_name": "Product 4", "priority": 5},
+  {"url": "https://example.com/product/5", "product_name": "Product 5", "priority": 0},
+  {"url": "https://example.com/product/6", "product_name": "Product 6", "priority": 0},
+  {"url": "https://example.com/product/7", "product_name": "Product 7", "priority": 0}
+]

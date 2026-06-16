@@ -1,0 +1,6 @@
+{
+  "batch_id": "dd1cd2d5-5703-451c-9ddc-b3ed3181c90b",
+  "num_images_per_product": 1,
+  "image_descriptions": ["modern product photography, white background, high angle shot"],
+  "prompt_template": "Generate a product image based on the reference URL: {url}. Style: {description}"
+}
