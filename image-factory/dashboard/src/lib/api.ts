@@ -191,10 +191,25 @@ export const api = {
   listUsers: () => request<{ users: any[] }>("/admin/users"),
   getAdminNotifications: () => request<{ notifications: any[] }>("/admin/notifications"),
   clearAdminNotifications: () => request<void>("/admin/notifications", { method: "DELETE" }),
+  retryAllFailed: () => request<any>("/admin/jobs/retry-all-failed", { method: "POST" }),
+  clearCompletedJobs: () => request<any>("/admin/jobs/clear-completed", { method: "DELETE" }),
+  getQueueStatus: () => request<any>("/admin/queue/status"),
+  pauseQueue: () => request<any>("/admin/queue/pause", { method: "POST" }),
+  resumeQueue: () => request<any>("/admin/queue/resume", { method: "POST" }),
 
-  // Google Drive
-  startDriveAuth: () => request<{ auth_url: string }>("/google-drive/auth/start"),
+  // Google Drive - Service Account
+  saveDriveCredentials: (credentialsJson: string) =>
+    request<any>("/google-drive/credentials", {
+      method: "POST",
+      body: JSON.stringify({ credentials_json: credentialsJson }),
+    }),
+  getDriveCredentials: () => request<{ configured: boolean; client_email: string }>("/google-drive/credentials"),
+  testDriveConnection: () => request<any>("/google-drive/test", { method: "POST" }),
   getDriveStatus: () => request<any>("/google-drive/auth/status"),
+  disconnectDrive: () => request<any>("/google-drive/auth/disconnect", { method: "POST" }),
+  getDriveConfig: () => request<any>("/google-drive/config"),
+  updateDriveConfig: (data: { root_folder?: string; auto_upload?: boolean }) =>
+    request<any>(`/google-drive/config${buildQuery(data)}`, { method: "PUT" }),
   listDriveFiles: (folderId?: string) =>
     request<any>(`/google-drive/list${folderId ? `?folder_id=${folderId}` : ""}`),
 
@@ -222,4 +237,26 @@ export const api = {
   getSmokeTestLatest: () => request<any>("/verification/smoke-test/latest"),
   runDryRun: () => request<any>("/verification/dry-run", { method: "POST" }),
   getSystemReadiness: () => request<any>("/verification/ready"),
+
+  // Content (Product Links Tracking)
+  getContentProducts: (params?: { status?: string; search?: string; project_id?: string; limit?: number; offset?: number }) =>
+    request<{ products: any[]; total: number }>(
+      `/content/products${buildQuery(params || {})}`
+    ),
+
+  getProductDetail: (id: string) =>
+    request<any>(`/content/products/${id}`),
+
+  retryContentProduct: (id: string) =>
+    request<any>(`/content/products/${id}/retry`, { method: "POST" }),
+
+  getContentStats: () =>
+    request<any>("/content/products/stats"),
+
+  // Credit Check
+  checkCredits: (data: { batch_id: string; num_images_per_product?: number; use_claude?: boolean }) =>
+    request<any>("/products/check-credits", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
 };

@@ -1,0 +1,24 @@
+services:
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: imagefactory-ngrok
+    command: http dashboard:3000 --url=${NGROK_DOMAIN:-}
+    env_file:
+      - .env
+    ports:
+      - "4040:4040"
+    depends_on:
+      dashboard:
+        condition: service_started
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+        reservations:
+          memory: 64M

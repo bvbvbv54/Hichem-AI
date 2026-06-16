@@ -22,20 +22,23 @@ export function AdminControlsPanel() {
   });
 
   const retryAllMutation = useMutation({
-    mutationFn: () => fetch("/api/v1/admin/jobs/retry-all-failed", { method: "POST" }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["active-jobs"] }),
+    mutationFn: () => api.retryAllFailed(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["active-jobs"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard-stats"] });
+    },
   });
 
   const clearCompletedMutation = useMutation({
-    mutationFn: () => fetch("/api/v1/admin/jobs/clear-completed", { method: "DELETE" }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["dashboard-stats"] }),
+    mutationFn: () => api.clearCompletedJobs(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["dashboard-stats"] });
+      queryClient.invalidateQueries({ queryKey: ["active-jobs"] });
+    },
   });
 
-  const startDriveAuthMutation = useMutation({
-    mutationFn: () => api.startDriveAuth(),
-    onSuccess: (data) => {
-      if (data?.auth_url) window.open(data.auth_url, "_blank", "width=600,height=700");
-    },
+  const testDriveMutation = useMutation({
+    mutationFn: () => api.testDriveConnection(),
   });
 
   const clearNotificationsMutation = useMutation({
@@ -60,9 +63,9 @@ export function AdminControlsPanel() {
             <Trash2 className="h-3.5 w-3.5" />
             Clear Completed
           </Button>
-          <Button variant="outline" size="sm" className="gap-1.5 text-xs h-8" onClick={() => startDriveAuthMutation.mutate()} disabled={startDriveAuthMutation.isPending}>
+          <Button variant="outline" size="sm" className="gap-1.5 text-xs h-8" onClick={() => testDriveMutation.mutate()} disabled={testDriveMutation.isPending}>
             <HardDrive className="h-3.5 w-3.5" />
-            {driveStatus?.authenticated ? "Re-auth Drive" : "Auth Drive"}
+            {driveStatus?.authenticated ? "Test Drive" : "Drive Setup"}
           </Button>
           <Button variant="outline" size="sm" className="gap-1.5 text-xs h-8" onClick={() => clearNotificationsMutation.mutate()} disabled={clearNotificationsMutation.isPending}>
             <RefreshCw className="h-3.5 w-3.5" />

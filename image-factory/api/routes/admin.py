@@ -10,10 +10,12 @@ from sqlalchemy import select, func, and_, update, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 import redis.asyncio as aioredis
 from starlette.responses import StreamingResponse
+from sqlalchemy import desc
 
 from api.dependencies import get_redis
 from database.session import get_session
 from database.models.job import Job
+from database.models.notification import Notification
 from configs.logging import get_logger
 
 logger = get_logger(__name__)
@@ -43,6 +45,58 @@ async def list_notifications(
 async def clear_notifications(redis: aioredis.Redis = Depends(get_redis)):
     await redis.delete("admin:notifications")
     return {"status": "cleared"}
+
+
+@router.get("/notifications/db")
+async def list_db_notifications(
+    limit: int = 50,
+    offset: int = 0,
+    level: str | None = None,
+    user_id: str | None = None,
+    session: AsyncSession = Depends(get_session),
+):
+    query = select(Notification).order_by(desc(Notification.created_at))
+    if level:
+        query = query.where(Notification.level == level)
+    if user_id:
+        query = query.where(Notification.user_id == user_id)
+    result = await session.execute(query.offset(offset).limit(limit))
+    notifications = list(result.scalars().all())
+    return {
+        "notifications": [
+            {
+                "id": n.id,
+                "user_id": n.user_id,
+                "type": n.type,
+                "level": n.level,
+                "title": n.title,
+                "message": n.message,
+                "project_id": n.project_id,
+                "run_id": n.run_id,
+                "data": n.data,
+                "read": n.read,
+                "created_at": n.created_at.isoformat() if n.created_at else None,
+            }
+            for n in notifications
+        ],
+        "total": len(notifications),
+    }
+
+
+@router.patch("/notifications/db/{notification_id}/read")
+async def mark_notification_read_db(
+    notification_id: str,
+    session: AsyncSession = Depends(get_session),
+):
+    result = await session.execute(
+        select(Notification).where(Notification.id == notification_id)
+    )
+    notif = result.scalar_one_or_none()
+    if notif:
+        notif.read = True
+        await session.commit()
+        return {"status": "read"}
+    return {"status": "not_found"}
 
 
 @router.get("/queue/status", summary="Queue state overview")

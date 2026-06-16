@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import math
 import time
@@ -8,12 +9,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import select, update as sql_update
+
 from workers.celery_app import celery_app
 from workers.async_runner import run_async
 from configs.settings import settings
 from configs.logging import get_logger
 from database.session import async_session
 from database.repository import JobRepository
+from database.models.product_link import ProductLink
 from models.enums import JobStatus
 from services.event_bus import publish, EventType, PipelineEvent
 from services.time_estimator import TimeEstimator
@@ -159,6 +163,8 @@ async def _execute_product_pipeline(self: Any, job_id: str, url: str, project_na
         parent_batch_id = await _get_parent_batch_id(job_id)
 
         try:
+            await _update_product_link_status(url, "scraping", job_id=job_id)
+
             # Stage 1: Acquisition
             stage_start = time.monotonic()
             await _publish_stage_event(job_id, "acquiring_images", "Downloading product images")
@@ -169,7 +175,11 @@ async def _execute_product_pipeline(self: Any, job_id: str, url: str, project_na
             if not acq_result.success or not acq_result.image_paths:
                 failure_type = "acquisition"
                 failure_detail = acq_result.failure_detail or "No images acquired"
+                await _update_product_link_status(url, "failed", error_message=failure_detail, failure_type=failure_type)
                 raise RuntimeError(failure_detail)
+
+            scraped_count = len(acq_result.image_paths)
+            await _update_product_link_status(url, "scraped", scraped_image_count=scraped_count)
 
             await estimator.record_stage(job_id, "acquisition", time.monotonic() - stage_start)
 
@@ -228,6 +238,12 @@ async def _execute_product_pipeline(self: Any, job_id: str, url: str, project_na
                 "images_selected": len(selected_paths),
                 "selected_assets": selected_paths,
             }
+
+            await _update_product_link_status(url, "completed",
+                product_name=product_spec.product_name or "",
+                generated_image_count=len(selected_paths),
+                job_id=job_id,
+            )
 
             # Stage 5: Google Drive
             stage_start = time.monotonic()
@@ -297,6 +313,11 @@ async def _execute_product_pipeline(self: Any, job_id: str, url: str, project_na
                 failure_type = "acquisition"
                 failure_detail = str(exc)
 
+            await _update_product_link_status(url, "failed" if failure_type != "acquisition" else "error",
+                error_message=failure_detail or str(exc),
+                failure_type=failure_type or "unknown",
+            )
+
             await _publish_stage_event(job_id, "failed", f"Failed: {failure_detail}")
 
             try:
@@ -333,6 +354,28 @@ async def _execute_product_pipeline(self: Any, job_id: str, url: str, project_na
 
     finally:
         await redis_conn.aclose()
+
+
+async def _update_product_link_status(url: str, status: str, **extra):
+    try:
+        async with async_session() as session:
+            url_hash = hashlib.sha256(url.encode()).hexdigest()
+            result = await session.execute(select(ProductLink).where(ProductLink.url_hash == url_hash))
+            link = result.scalar_one_or_none()
+            if link:
+                updates = {"status": status, "updated_at": datetime.utcnow(), **extra}
+                if status in ("completed", "failed", "error"):
+                    updates["completed_at"] = datetime.utcnow()
+                if status == "scraped":
+                    updates["last_scraped_at"] = datetime.utcnow()
+                if status == "generating" or status == "completed":
+                    updates["last_generated_at"] = datetime.utcnow()
+                await session.execute(
+                    sql_update(ProductLink).where(ProductLink.id == link.id).values(**updates)
+                )
+                await session.commit()
+    except Exception as e:
+        logger.warning("failed_to_update_product_link", url=url, error=str(e))
 
 
 async def _get_job_meta(job_id: str) -> dict | None:

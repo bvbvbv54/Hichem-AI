@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
 from pydantic import BaseModel
@@ -18,14 +19,46 @@ from api.dependencies import get_job_repo, get_redis
 from database.repository import JobRepository
 from database.session import get_session
 from database.models.job import Job
+from database.models.product_link import ProductLink
 from models.enums import JobStatus
 from configs.settings import settings
 from configs.logging import get_logger
+from services.nano_banana.credit_balancer import get_credit_balancer
 import redis.asyncio as aioredis
 
 logger = get_logger(__name__)
 
 router = APIRouter()
+
+
+class SubmitGenerationRequest(BaseModel):
+    batch_id: str
+    project_id: str = ""
+    num_images_per_product: int
+    image_descriptions: list[str]
+    prompt_template: str = ""
+    skip_credit_check: bool = False
+
+
+class CreditCheckRequest(BaseModel):
+    batch_id: str
+    project_id: str = ""
+    num_images_per_product: int = 1
+    use_claude: bool = True
+
+
+class CreditCheckResponse(BaseModel):
+    sufficient: bool
+    estimated_cost_cents: float
+    available_credits_cents: float
+    deficit_cents: float
+    total_products: int
+    total_images_requested: int
+    max_images_affordable: int
+    warning_message: str
+    cost_per_image_cents: float = 1.0
+    cost_per_claude_call_cents: float = 0.03
+    require_confirmation: bool
 
 
 @router.post("/products/upload", summary="Upload Excel/CSV product spreadsheet")
@@ -108,6 +141,8 @@ async def upload_products(
             "row_number": product.row_number,
         })
 
+    await _create_product_links(session, product_list, batch_id, project_id or "default")
+
     from services.time_estimator import TimeEstimator
 
     estimator = TimeEstimator(redis)
@@ -116,15 +151,32 @@ async def upload_products(
         avg_min = settings.batch_avg_minutes_per_product
     estimated_duration_minutes = round(parse_result.valid_rows * avg_min)
 
+    # Dispatch single product tasks for scraping (images + product names)
     from workers.celery_app import celery_app
 
-    celery_app.send_task("tasks.product.process_product_batch", args=[batch_id, product_list])
+    dispatched = 0
+    for product in product_list:
+        if product.get("url"):
+            celery_app.send_task("tasks.product.process_single_product", args=[product["job_id"], product["url"], project_id or "default"])
+            dispatched += 1
 
-    logger.info("batch_created", batch_id=batch_id, products=parse_result.valid_rows, warnings=len(parse_result.warnings))
+    logger.info("batch_created", batch_id=batch_id, products=parse_result.valid_rows, warnings=len(parse_result.warnings), task_dispatched=dispatched)
 
     return {
         "batch_id": batch_id,
         "job_id": batch_id,
+        "status": "parsed",
+        "message": f"Parsed {parse_result.valid_rows} products from file",
+        "total_products": parse_result.valid_rows,
+        "total_images_scraped": 0,
+        "scraped_images": [
+            {
+                "url": p.product_url,
+                "product_name": p.product_name,
+                "count": 0,
+            }
+            for p in parse_result.products
+        ],
         "parse_result": {
             "total_rows": parse_result.total_rows,
             "valid_rows": parse_result.valid_rows,
@@ -132,9 +184,48 @@ async def upload_products(
             "duplicate_rows": parse_result.duplicate_rows,
             "warnings": parse_result.warnings,
         },
-        "status": JobStatus.QUEUED.value,
         "estimated_duration_minutes": estimated_duration_minutes,
     }
+
+
+@router.post("/products/check-credits", response_model=CreditCheckResponse, summary="Check Nano Banana credits before generation")
+async def check_credits_before_generation(
+    req: CreditCheckRequest,
+    session: AsyncSession = Depends(get_session),
+):
+    batch_dir = Path(settings.storage_path) / "uploads" / req.batch_id
+    if not batch_dir.exists():
+        raise HTTPException(status_code=404, detail="Batch not found. Please upload again.")
+
+    products_file = batch_dir / "products.json"
+    if not products_file.exists():
+        raise HTTPException(status_code=400, detail="Products data not found.")
+
+    products = json.loads(products_file.read_text())
+    product_count = len(products)
+
+    balancer = get_credit_balancer()
+    credit_status = await balancer.check_sufficient_credits(
+        product_count=product_count,
+        images_per_product=req.num_images_per_product,
+        use_claude=req.use_claude,
+    )
+
+    require_confirmation = not credit_status.sufficient or credit_status.available_credits_cents < 100.0
+
+    return CreditCheckResponse(
+        sufficient=credit_status.sufficient,
+        estimated_cost_cents=credit_status.estimated_cost_cents,
+        available_credits_cents=credit_status.available_credits_cents,
+        deficit_cents=credit_status.deficit_cents,
+        total_products=product_count,
+        total_images_requested=credit_status.total_images_requested,
+        max_images_affordable=credit_status.max_images_affordable,
+        warning_message=credit_status.warning_message,
+        cost_per_image_cents=balancer.COST_PER_IMAGE_CENTS,
+        cost_per_claude_call_cents=balancer.COST_PER_CLAUDE_CALL_CENTS,
+        require_confirmation=require_confirmation,
+    )
 
 
 @router.get("/products/batch/{batch_id}", summary="Get batch status")
@@ -318,18 +409,36 @@ async def export_batch(
     )
 
 
-class SubmitGenerationRequest(BaseModel):
-    batch_id: str
-    project_id: str = ""
-    num_images_per_product: int
-    image_descriptions: list[str]
-    prompt_template: str = ""
+async def _create_product_links(session, products: list[dict], batch_id: str, project_id: str):
+    for product in products:
+        url = product.get("url", "")
+        if not url:
+            continue
+        url_hash = hashlib.sha256(url.encode()).hexdigest()
+        existing = await session.execute(
+            select(ProductLink).where(ProductLink.url_hash == url_hash)
+        )
+        if existing.scalar_one_or_none():
+            continue
+        link = ProductLink(
+            url=url,
+            url_hash=url_hash,
+            project_id=project_id or "default",
+            batch_id=batch_id,
+            status="pending",
+            product_name=product.get("product_name", ""),
+            category=product.get("category", ""),
+            priority=product.get("priority", 0),
+        )
+        session.add(link)
+    await session.commit()
 
 
 @router.post("/products/generate", summary="Start AI generation with user inputs")
 async def start_generation(
     req: SubmitGenerationRequest,
     repo: JobRepository = Depends(get_job_repo),
+    session: AsyncSession = Depends(get_session),
 ):
     if req.num_images_per_product < 1 and req.num_images_per_product != -1:
         raise HTTPException(status_code=400, detail="Number of images must be between 1 and 10, or -1 for auto.")
@@ -343,6 +452,29 @@ async def start_generation(
     products_file = batch_dir / "products.json"
     if not products_file.exists():
         raise HTTPException(status_code=400, detail="Products data not found.")
+
+    if not req.skip_credit_check:
+        balancer = get_credit_balancer()
+        products = json.loads(products_file.read_text())
+        credit_status = await balancer.check_sufficient_credits(
+            product_count=len(products),
+            images_per_product=req.num_images_per_product if req.num_images_per_product > 0 else 1,
+            use_claude=True,
+        )
+        if not credit_status.sufficient:
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "error": "insufficient_credits",
+                    "message": credit_status.warning_message,
+                    "estimated_cost_cents": credit_status.estimated_cost_cents,
+                    "available_credits_cents": credit_status.available_credits_cents,
+                    "total_products": len(products),
+                    "total_images": credit_status.total_images_requested,
+                    "max_affordable": credit_status.max_images_affordable,
+                    "hint": "Set skip_credit_check=true to bypass or reduce num_images_per_product",
+                },
+            )
 
     products = json.loads(products_file.read_text())
 
@@ -360,6 +492,17 @@ async def start_generation(
                 per_product_counts[pd.name] = max(image_count, 1)
     else:
         per_product_counts = {}
+
+    for product in products:
+        url = product.get("url", "")
+        if url:
+            url_hash = hashlib.sha256(url.encode()).hexdigest()
+            await session.execute(
+                update(ProductLink)
+                .where(ProductLink.url_hash == url_hash)
+                .values(status="generating", updated_at=datetime.utcnow())
+            )
+    await session.commit()
 
     batch_job = await repo.create({
         "type": "bulk",

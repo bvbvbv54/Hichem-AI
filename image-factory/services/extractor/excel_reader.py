@@ -86,6 +86,53 @@ class ExcelReader:
             self._openpyxl = False
         return self._openpyxl
 
+    def _find_url_column(self, raw_rows: list[dict[str, Any]]) -> str | None:
+        """Find the column that contains URLs by scanning header names first,
+        then falling back to data content."""
+        if not raw_rows:
+            return None
+        headers = list(raw_rows[0].keys())
+        # First pass: match known URL column name patterns
+        for h in headers:
+            norm = h.strip().lower()
+            if norm in ("url", "link", "product url", "product link", "product_url", "product_link", "website", "site", "href"):
+                return h
+        # Second pass: check if any column contains mostly URL-like values
+        url_pattern = re.compile(r"^https?://", re.IGNORECASE)
+        for h in headers:
+            url_count = 0
+            for row in raw_rows[:20]:
+                val = str(row.get(h, "")).strip()
+                if url_pattern.match(val):
+                    url_count += 1
+            if url_count >= 3 or (url_count > 0 and url_count == len(raw_rows[:20])):
+                return h
+        # Third pass: return the first column that has ANY URL
+        for h in headers:
+            for row in raw_rows[:10]:
+                val = str(row.get(h, "")).strip()
+                if url_pattern.match(val):
+                    return h
+        return None
+
+    def _find_name_column(self, raw_rows: list[dict[str, Any]], url_col: str | None) -> str | None:
+        """Find the column that contains product names by checking headers."""
+        if not raw_rows:
+            return None
+        headers = list(raw_rows[0].keys())
+        name_keywords = {"name", "title", "product name", "product title", "product_name",
+                         "product", "item", "description", "desc", "sku"}
+        for h in headers:
+            norm = h.strip().lower()
+            if norm in name_keywords:
+                return h
+        # If URL column is found, use the column immediately to its left as name
+        if url_col:
+            col_idx = headers.index(url_col)
+            if col_idx > 0:
+                return headers[col_idx - 1]
+        return None
+
     def _normalize_headers(self, raw_headers: list[str]) -> list[str]:
         return [COLUMN_MAP.get(h.strip().lower(), h.strip().lower()) for h in raw_headers]
 
@@ -119,6 +166,13 @@ class ExcelReader:
         result = ExcelParseResult()
         seen_urls: set[str] = set()
 
+        url_col = self._find_url_column(raw_rows)
+        name_col = self._find_name_column(raw_rows, url_col) if url_col else None
+        if url_col:
+            result.warnings.append(f"Auto-detected URL column: '{url_col}'")
+            if name_col:
+                result.warnings.append(f"Auto-detected name column: '{name_col}'")
+
         for idx, raw in enumerate(raw_rows):
             row_num = idx + 2
             result.total_rows += 1
@@ -126,6 +180,16 @@ class ExcelReader:
             for k, v in raw.items():
                 norm_k = COLUMN_MAP.get(k.strip().lower(), k.strip().lower())
                 row[norm_k] = v
+
+            # If URL column was auto-detected (not from normal headers), inject it
+            if url_col and not row.get("product_url"):
+                raw_url = str(raw.get(url_col, "")).strip()
+                if raw_url:
+                    row["product_url"] = raw_url
+            if name_col and not row.get("product_name"):
+                raw_name = str(raw.get(name_col, "")).strip()
+                if raw_name:
+                    row["product_name"] = raw_name
 
             url = (row.get("product_url") or "").strip()
 

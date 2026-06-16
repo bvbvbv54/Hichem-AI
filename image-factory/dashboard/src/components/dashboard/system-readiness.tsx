@@ -144,40 +144,20 @@ export function SystemReadinessPanel() {
           </div>
         )}
 
-        <div className="border-t border-muted-foreground/10 pt-4 grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="p-4 rounded-xl border border-muted-foreground/10 bg-muted/10 flex flex-col justify-between">
-            <span className="text-xs text-muted-foreground font-medium">Last Smoke Test Status</span>
-            <div className="flex items-center gap-2 mt-2">
+        <div className="border-t border-muted-foreground/10 pt-4">
+          <div className="p-4 rounded-xl border border-muted-foreground/10 bg-muted/10 flex items-center justify-between">
+            <span className="text-xs text-muted-foreground font-medium">Last Smoke Test</span>
+            <div className="flex items-center gap-2">
               {latestSmokeTest ? (
-                <>
-                  {latestSmokeTest.status === "passed" ? (
-                    <Badge className="bg-emerald-500/10 text-emerald-500 border-emerald-500/20 font-bold px-2.5 py-1">PASSED</Badge>
-                  ) : (
-                    <Badge className="bg-rose-500/10 text-rose-500 border-rose-500/20 font-bold px-2.5 py-1">FAILED</Badge>
-                  )}
-                </>
+                latestSmokeTest.status === "passed" ? (
+                  <Badge className="bg-emerald-500/10 text-emerald-500 border-emerald-500/20 font-bold px-2.5 py-1">PASSED</Badge>
+                ) : (
+                  <Badge className="bg-rose-500/10 text-rose-500 border-rose-500/20 font-bold px-2.5 py-1">FAILED</Badge>
+                )
               ) : (
                 <span className="text-sm font-semibold text-muted-foreground">Never run</span>
               )}
             </div>
-          </div>
-          <div className="p-4 rounded-xl border border-muted-foreground/10 bg-muted/10 flex flex-col justify-between">
-            <span className="text-xs text-muted-foreground font-medium flex items-center gap-1">
-              <Clock className="h-3.5 w-3.5" />
-              Smoke Test Runtime
-            </span>
-            <span className="text-lg font-bold mt-2 text-foreground">
-              {latestSmokeTest?.duration_ms ? `${(latestSmokeTest.duration_ms / 1000).toFixed(2)}s` : "—"}
-            </span>
-          </div>
-          <div className="p-4 rounded-xl border border-muted-foreground/10 bg-muted/10 flex flex-col justify-between">
-            <span className="text-xs text-muted-foreground font-medium flex items-center gap-1">
-              <Coins className="h-3.5 w-3.5" />
-              Smoke Test Cost Estimate
-            </span>
-            <span className="text-lg font-bold mt-2 text-foreground">
-              {latestSmokeTest?.cost_cents ? `$${(latestSmokeTest.cost_cents / 100).toFixed(2)}` : "—"}
-            </span>
           </div>
         </div>
       </CardContent>

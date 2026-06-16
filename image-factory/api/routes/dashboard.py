@@ -7,8 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database.session import get_session
 from database.models.job import Job
 from database.models.asset import Asset
-from configs.pricing import compute_image_cost, compute_text_cost
+from database.models.product_link import ProductLink
 from configs.logging import get_logger
+from services.nano_banana.credit_balancer import get_credit_balancer
 
 logger = get_logger(__name__)
 
@@ -17,42 +18,37 @@ router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
 
 @router.get("/stats")
 async def get_dashboard_stats(session: AsyncSession = Depends(get_session)):
-    total_result = await session.execute(select(func.count(Job.id)))
+    # Count actual products (ProductLink), not Job rows
+    total_result = await session.execute(select(func.count(ProductLink.id)))
     total = total_result.scalar() or 0
 
-    queue_result = await session.execute(select(func.count(Job.id)).where(Job.status == "pending"))
-    in_queue = queue_result.scalar() or 0
+    pending_result = await session.execute(select(func.count(ProductLink.id)).where(ProductLink.status == "pending"))
+    in_queue = pending_result.scalar() or 0
 
     processing_result = await session.execute(
-        select(func.count(Job.id)).where(Job.status.in_(["processing", "enhancing_prompt", "generating", "storing", "delivering"]))
+        select(func.count(ProductLink.id)).where(ProductLink.status.in_(["scraping", "generating"]))
     )
     processing = processing_result.scalar() or 0
 
-    completed_result = await session.execute(select(func.count(Job.id)).where(Job.status == "completed"))
+    completed_result = await session.execute(select(func.count(ProductLink.id)).where(ProductLink.status == "completed"))
     completed = completed_result.scalar() or 0
 
-    failed_result = await session.execute(select(func.count(Job.id)).where(Job.status == "failed"))
+    failed_result = await session.execute(select(func.count(ProductLink.id)).where(ProductLink.status == "failed"))
     failed = failed_result.scalar() or 0
 
     images_result = await session.execute(select(func.count(Asset.id)))
     total_images = images_result.scalar() or 0
 
-    total_cost_cents = 0
-    jobs_result = await session.execute(select(Job))
-    all_jobs = jobs_result.scalars().all()
-    for job in all_jobs:
-        meta = job.meta or {}
-        for call in meta.get("llm_calls", []):
-            if call.get("type") == "image_generation":
-                model = call.get("model", "flux")
-                est_cost = call.get("estimated_cost")
-                if est_cost is not None:
-                    total_cost_cents += round(float(est_cost) * 100)
-                else:
-                    total_cost_cents += round(compute_image_cost(model, 1) * 100)
-
-    if total_cost_cents == 0:
-        total_cost_cents = total_images * 5
+    try:
+        balancer = get_credit_balancer()
+        balance = await balancer.check_balance()
+        cost_per_image = balancer.COST_PER_IMAGE_CENTS
+        total_cost_cents = total_images * cost_per_image
+    except Exception as e:
+        logger.warning("credit_balancer_unavailable", error=str(e))
+        balance = 0.0
+        cost_per_image = 1.0
+        total_cost_cents = 0.0
 
     completed_jobs_result = await session.execute(
         select(Job).where(Job.status == "completed", Job.completed_at.isnot(None), Job.created_at.isnot(None))
@@ -71,8 +67,10 @@ async def get_dashboard_stats(session: AsyncSession = Depends(get_session)):
         "products_completed": completed,
         "products_failed": failed,
         "total_images": total_images,
-        "ai_credits_used": total_images * 10,
-        "estimated_cost": total_cost_cents if total_cost_cents > 0 else total_images * 5,
+        "ai_credits_used": total_images * cost_per_image,
+        "estimated_cost": total_cost_cents,
+        "nano_banana_balance": balance,
+        "nano_banana_cost_per_image": cost_per_image,
         "avg_processing_time_seconds": avg_time,
     }
 

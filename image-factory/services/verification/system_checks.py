@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Optional
 
+from sqlalchemy import text
+
 from configs.settings import settings
 from configs.logging import get_logger
 
@@ -59,8 +61,7 @@ class SystemChecker:
         try:
             from database.session import engine
             async with engine.begin() as conn:
-                result = await conn.execute("SELECT 1")
-                await result.close()
+                await conn.execute(text("SELECT 1"))
             latency = (time.time() - start) * 1000
             return CheckResult("database", "healthy", "PostgreSQL connected", latency)
         except Exception as e:
@@ -110,6 +111,10 @@ class SystemChecker:
         try:
             from services.nano_banana.client import NanoBananaClient
             provider = NanoBananaClient()
+            api_key = getattr(settings, f"{settings.image_provider}_api_key", "")
+            if not api_key:
+                latency = (time.time() - start) * 1000
+                return CheckResult("ai_provider", "warning", f"No API key configured for '{settings.image_provider}'", latency)
             healthy = await provider.check_health()
             latency = (time.time() - start) * 1000
             if healthy:
@@ -122,19 +127,14 @@ class SystemChecker:
         """Check if Celery worker is active and responsive."""
         start = time.time()
         try:
-            import redis.asyncio as redis_async
-            r = redis_async.from_url(settings.celery_broker_url, socket_connect_timeout=5)
-            
-            # Check if there are workers registered
-            workers = await r.execute_command("GET", "celery:workers")
-            
-            # Check broker connectivity
-            await r.ping()
-            await r.aclose()
+            from celery.app.control import Inspect
+            from workers.celery_app import celery_app
+            inspect = Inspect(app=celery_app)
+            workers = await asyncio.to_thread(inspect.ping)
             
             latency = (time.time() - start) * 1000
             if workers:
-                return CheckResult("worker", "healthy", "Celery worker(s) active", latency)
+                return CheckResult("worker", "healthy", f"{len(workers)} Celery worker(s) active", latency)
             else:
                 return CheckResult("worker", "warning", "Celery broker ready, waiting for worker", latency)
         except Exception as e:

@@ -1,4 +1,4 @@
-"""Notification system for tracking job progress via Redis."""
+"""Notification system for tracking job progress via Redis + PostgreSQL."""
 
 import json
 from datetime import datetime
@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from configs.settings import settings
 from configs.logging import get_logger
+from database.models.notification import Notification
 
 logger = get_logger(__name__)
 
@@ -67,8 +68,10 @@ class NotificationService:
             logger.error("notification_publish_failed", error=str(e))
 
     async def store(self, notification: NotificationEvent):
-        """Store notification in Redis for persistence."""
+        """Store notification in Redis and PostgreSQL."""
         await self.connect()
+
+        # Redis persistence (fast access, TTL-bound)
         try:
             key = f"notifications:{notification.user_id}:{notification.id}"
             await self.redis.setex(
@@ -76,15 +79,35 @@ class NotificationService:
                 86400,  # 24 hours TTL
                 notification.model_dump_json()
             )
-            
-            # Add to list for pagination
+
             list_key = f"notifications:list:{notification.user_id}"
             await self.redis.lpush(list_key, notification.id)
-            await self.redis.ltrim(list_key, 0, 999)  # Keep last 1000
-            
-            logger.info("notification_stored", user_id=notification.user_id)
+            await self.redis.ltrim(list_key, 0, 999)
         except Exception as e:
-            logger.error("notification_store_failed", error=str(e))
+            logger.error("notification_redis_store_failed", error=str(e))
+
+        # PostgreSQL persistence (permanent storage)
+        try:
+            from database.session import async_session
+            async with async_session() as session:
+                db_notification = Notification(
+                    id=notification.id,
+                    user_id=notification.user_id or "",
+                    type=notification.type,
+                    level=notification.level.value,
+                    title=notification.title,
+                    message=notification.message,
+                    project_id=notification.project_id or "",
+                    run_id=notification.run_id or "",
+                    data=notification.data,
+                    read=notification.read,
+                    created_at=notification.created_at,
+                )
+                session.add(db_notification)
+                await session.commit()
+                logger.info("notification_db_stored", user_id=notification.user_id)
+        except Exception as e:
+            logger.error("notification_db_store_failed", error=str(e))
 
     async def get_notifications(self, user_id: str, limit: int = 100) -> list[NotificationEvent]:
         """Get user's notifications."""

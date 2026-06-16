@@ -50,6 +50,8 @@ async def init_db() -> None:
                 from database.models.job import Job  # noqa
                 from database.models.asset import Asset  # noqa
                 from database.models.user import User, ApiKey, Project  # noqa
+                from database.models.product_link import ProductLink  # noqa
+                from database.models.notification import Notification  # noqa
 
                 await conn.run_sync(Base.metadata.create_all)
             return

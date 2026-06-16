@@ -18,7 +18,7 @@ class JobRepository:
         self.session = session
 
     async def create(self, job_data: dict[str, Any]) -> Job:
-        job_id = str(uuid.uuid4())
+        job_id = job_data.pop("id", None) or str(uuid.uuid4())
         job = Job(id=job_id, **job_data)
         self.session.add(job)
         await self.session.commit()

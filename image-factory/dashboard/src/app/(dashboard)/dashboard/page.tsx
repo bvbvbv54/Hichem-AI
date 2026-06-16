@@ -26,7 +26,7 @@ function EtaCounter({ seconds }: { seconds: number }) {
 export default function DashboardPage() {
   useSSE();
 
-  const { data: stats } = useQuery({
+  const { data: stats, isLoading: statsLoading } = useQuery({
     queryKey: ["dashboard-stats"],
     queryFn: () => api.getDashboardStats(),
     refetchInterval: REFETCH_INTERVAL,
@@ -52,7 +52,7 @@ export default function DashboardPage() {
   const totalImages = stats?.total_images ?? 0;
   const doneRate = total > 0 ? Math.round(((completed + failed) / total) * 100) : 0;
 
-  const isLoading = !stats;
+  const isLoading = statsLoading;
 
   const allHealthy = systemStatus && Object.values(systemStatus).every((v) => v === "healthy");
   const degradedCount = systemStatus ? Object.entries(systemStatus).filter(([k, v]) => k !== "api" && v !== "healthy").length : 0;
@@ -183,12 +183,14 @@ export default function DashboardPage() {
           <CardHeader className="pb-3">
             <CardTitle className="text-sm font-medium flex items-center gap-2">
               <HardDrive className="h-3.5 w-3.5" />
-              Storage
+              Nano Banana Credits
             </CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-xl font-bold">${(stats?.estimated_cost ? (stats.estimated_cost / 100).toFixed(2) : "0.00")}</div>
-            <p className="text-xs text-muted-foreground">Total estimated cost</p>
+            <p className="text-xs text-muted-foreground">
+              Balance: ${(stats?.nano_banana_balance ? (stats.nano_banana_balance / 100).toFixed(2) : "0.00")} &middot; ${(stats?.nano_banana_cost_per_image || 1).toFixed(2)}/img
+            </p>
           </CardContent>
         </Card>
       </div>

@@ -10,36 +10,153 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "@/hooks/use-toast";
-import { Key, Plus, Copy, Trash2, Eye, EyeOff, User, Bell } from "lucide-react";
+import { Key, Cloud, RefreshCw, Trash2, Eye, EyeOff, CheckCircle2, XCircle } from "lucide-react";
 
-export default function SettingsPage() {
-  const [showNewKey, setShowNewKey] = useState(false);
-  const [newKeyName, setNewKeyName] = useState("");
-  const [createdKey, setCreatedKey] = useState<string | null>(null);
+function DriveCredentialsSection() {
+  const [jsonInput, setJsonInput] = useState("");
+  const [showJson, setShowJson] = useState(false);
+  const [testStatus, setTestStatus] = useState<"idle" | "testing" | "ok" | "fail">("idle");
   const queryClient = useQueryClient();
 
-  const { data: apiKeys, isLoading } = useQuery({
-    queryKey: ["api-keys"],
-    queryFn: () => api.getApiKeys(),
+  const { data: creds, isLoading: credsLoading, refetch: refetchCreds } = useQuery({
+    queryKey: ["drive-credentials"],
+    queryFn: () => api.getDriveCredentials(),
   });
 
-  const createMutation = useMutation({
-    mutationFn: () => api.createApiKey(newKeyName),
+  const saveMutation = useMutation({
+    mutationFn: () => api.saveDriveCredentials(jsonInput),
     onSuccess: (data) => {
-      setCreatedKey(data.key);
-      queryClient.invalidateQueries({ queryKey: ["api-keys"] });
+      toast({ title: "Credentials saved", description: `Connected as ${data.client_email}` });
+      setJsonInput("");
+      refetchCreds();
+      queryClient.invalidateQueries({ queryKey: ["drive-status"] });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Failed to save", description: err.message, variant: "destructive" });
     },
   });
 
-  const deleteMutation = useMutation({
-    mutationFn: (id: string) => api.deleteApiKey(id),
+  const disconnectMutation = useMutation({
+    mutationFn: () => api.disconnectDrive(),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["api-keys"] });
-      toast({ title: "API key deleted" });
+      toast({ title: "Credentials removed" });
+      refetchCreds();
+      queryClient.invalidateQueries({ queryKey: ["drive-status"] });
     },
   });
+
+  const testMutation = useMutation({
+    mutationFn: () => api.testDriveConnection(),
+    onSuccess: () => {
+      setTestStatus("ok");
+      setTimeout(() => setTestStatus("idle"), 3000);
+    },
+    onError: (err: Error) => {
+      setTestStatus("fail");
+      toast({ title: "Connection failed", description: err.message, variant: "destructive" });
+      setTimeout(() => setTestStatus("idle"), 5000);
+    },
+  });
+
+  if (credsLoading) return <Skeleton className="h-24 w-full" />;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <p className="text-sm font-medium">Service Account</p>
+            <Badge variant={creds?.configured ? "default" : "secondary"}>
+              {creds?.configured ? "Configured" : "Not configured"}
+            </Badge>
+          </div>
+          {creds?.client_email && (
+            <p className="text-xs text-muted-foreground font-mono">{creds.client_email}</p>
+          )}
+        </div>
+        <div className="flex gap-2">
+          {creds?.configured && (
+            <>
+              <Button variant="outline" size="sm" onClick={() => testMutation.mutate()} disabled={testMutation.isPending}>
+                {testStatus === "ok" ? <CheckCircle2 className="h-4 w-4 mr-1 text-green-500" /> :
+                 testStatus === "fail" ? <XCircle className="h-4 w-4 mr-1 text-red-500" /> :
+                 <RefreshCw className="h-4 w-4 mr-1" />}
+                Test
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => disconnectMutation.mutate()}>
+                <Trash2 className="h-4 w-4 mr-1" /> Remove
+              </Button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {!creds?.configured && (
+        <div className="space-y-3">
+          <Label>Service Account JSON</Label>
+          <div className="flex gap-2 items-start">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => window.open("https://console.cloud.google.com/iam-admin/serviceaccounts", "_blank")}
+            >
+              <Key className="h-4 w-4 mr-1" /> Get my Key
+            </Button>
+            <span className="text-xs text-muted-foreground pt-1">
+              Create a service account, then create a new JSON key and paste it below.
+            </span>
+          </div>
+          <div className="relative">
+            <textarea
+              className="flex min-h-[120px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
+              placeholder='Paste the JSON key here'
+              value={jsonInput}
+              onChange={(e) => setJsonInput(e.target.value)}
+            />
+          </div>
+          <Button
+            onClick={() => saveMutation.mutate()}
+            disabled={!jsonInput.trim() || saveMutation.isPending}
+          >
+            Save Credentials
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function SettingsPage() {
+  const [nanoBananaKey, setNanoBananaKey] = useState("");
+  const [geminiKey, setGeminiKey] = useState("");
+  const [savedNanoKey, setSavedNanoKey] = useState("");
+  const [savedGeminiKey, setSavedGeminiKey] = useState("");
+  const [showNanoKey, setShowNanoKey] = useState(false);
+  const [showGeminiKey, setShowGeminiKey] = useState(false);
+
+  const queryClient = useQueryClient();
+
+  useEffect(() => {
+    const savedNano = localStorage.getItem("nano_banana_key") || "";
+    const savedGemini = localStorage.getItem("gemini_api_key") || "";
+    setSavedNanoKey(savedNano);
+    setSavedGeminiKey(savedGemini);
+    setNanoBananaKey(savedNano);
+    setGeminiKey(savedGemini);
+  }, []);
+
+  const saveKeysToLocal = () => {
+    if (nanoBananaKey.trim()) {
+      localStorage.setItem("nano_banana_key", nanoBananaKey.trim());
+    }
+    if (geminiKey.trim()) {
+      localStorage.setItem("gemini_api_key", geminiKey.trim());
+    }
+    setSavedNanoKey(nanoBananaKey.trim());
+    setSavedGeminiKey(geminiKey.trim());
+    toast({ title: "API keys saved locally" });
+  };
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
@@ -50,126 +167,92 @@ export default function SettingsPage() {
     <div className="space-y-6 max-w-2xl">
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Settings</h1>
-        <p className="text-muted-foreground">Manage your account and API keys</p>
+        <p className="text-muted-foreground">Configure API keys and integrations</p>
       </div>
 
-      {/* Profile */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <User className="h-5 w-5" />
-            Profile
-          </CardTitle>
-          <CardDescription>Your account information</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <Label>Email</Label>
-            <Input value="user@example.com" disabled />
-          </div>
-          <div className="space-y-2">
-            <Label>Name</Label>
-            <Input value="User" disabled />
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* API Keys */}
+      {/* API Keys - Nano Banana & Gemini */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Key className="h-5 w-5" />
-            API Keys
+            AI Provider Keys
           </CardTitle>
-          <CardDescription>Manage API keys for programmatic access</CardDescription>
+          <CardDescription>Configure your AI provider API keys for image generation and text processing</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          {isLoading ? (
-            <Skeleton className="h-20 w-full" />
-          ) : (
-            <div className="space-y-2">
-              {(apiKeys || []).map((key: any) => (
-                <div key={key.id} className="flex items-center justify-between rounded-lg border p-3">
-                  <div>
-                    <p className="font-medium">{key.name}</p>
-                    <p className="text-xs text-muted-foreground font-mono">
-                      {key.key?.slice(0, 12)}...
-                    </p>
-                  </div>
-                  <div className="flex gap-2">
-                    <Button variant="ghost" size="icon" onClick={() => copyToClipboard(key.key)}>
-                      <Copy className="h-4 w-4" />
-                    </Button>
-                    <Button variant="ghost" size="icon" onClick={() => deleteMutation.mutate(key.id)}>
-                      <Trash2 className="h-4 w-4 text-destructive" />
-                    </Button>
-                  </div>
-                </div>
-              ))}
+          <div className="space-y-2">
+            <Label>Nano Banana API Key</Label>
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <Input
+                  type={showNanoKey ? "text" : "password"}
+                  placeholder="Enter your Nano Banana API key"
+                  value={nanoBananaKey}
+                  onChange={(e) => setNanoBananaKey(e.target.value)}
+                />
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7"
+                  onClick={() => setShowNanoKey(!showNanoKey)}
+                >
+                  {showNanoKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </Button>
+              </div>
             </div>
-          )}
+            {savedNanoKey && (
+              <p className="text-xs text-muted-foreground">
+                Key saved: {savedNanoKey.slice(0, 8)}...{savedNanoKey.slice(-4)}
+              </p>
+            )}
+          </div>
 
           <Separator />
 
-          <Dialog open={showNewKey} onOpenChange={setShowNewKey}>
-            <Button
-              variant="outline"
-              onClick={() => setShowNewKey(true)}
-              className="w-full"
-            >
-              <Plus className="h-4 w-4 mr-2" /> Create API Key
-            </Button>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Create API Key</DialogTitle>
-              </DialogHeader>
-              {createdKey ? (
-                <div className="space-y-4 pt-4">
-                  <p className="text-sm text-muted-foreground">Copy this key now. You won&apos;t be able to see it again.</p>
-                  <div className="flex gap-2">
-                    <Input value={createdKey} readOnly className="font-mono text-xs" />
-                    <Button onClick={() => copyToClipboard(createdKey)}>
-                      <Copy className="h-4 w-4" />
-                    </Button>
-                  </div>
-                  <Button onClick={() => { setShowNewKey(false); setCreatedKey(null); setNewKeyName(""); }} className="w-full">
-                    Done
-                  </Button>
-                </div>
-              ) : (
-                <div className="space-y-4 pt-4">
-                  <Input
-                    placeholder="Key name (e.g., Production)"
-                    value={newKeyName}
-                    onChange={(e) => setNewKeyName(e.target.value)}
-                  />
-                  <Button
-                    onClick={() => createMutation.mutate()}
-                    disabled={!newKeyName || createMutation.isPending}
-                    className="w-full"
-                  >
-                    Create
-                  </Button>
-                </div>
-              )}
-            </DialogContent>
-          </Dialog>
+          <div className="space-y-2">
+            <Label>Gemini API Key</Label>
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <Input
+                  type={showGeminiKey ? "text" : "password"}
+                  placeholder="Enter your Google Gemini API key"
+                  value={geminiKey}
+                  onChange={(e) => setGeminiKey(e.target.value)}
+                />
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7"
+                  onClick={() => setShowGeminiKey(!showGeminiKey)}
+                >
+                  {showGeminiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </Button>
+              </div>
+            </div>
+            {savedGeminiKey && (
+              <p className="text-xs text-muted-foreground">
+                Key saved: {savedGeminiKey.slice(0, 8)}...{savedGeminiKey.slice(-4)}
+              </p>
+            )}
+          </div>
+
+          <Button onClick={saveKeysToLocal} disabled={!nanoBananaKey.trim() && !geminiKey.trim()}>
+            Save Keys
+          </Button>
         </CardContent>
       </Card>
 
-      {/* Notifications */}
+      {/* Google Drive Sync */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <Bell className="h-5 w-5" />
-            Notifications
+            <Cloud className="h-5 w-5" />
+            Google Drive Sync
           </CardTitle>
-          <CardDescription>Configure notification preferences</CardDescription>
+          <CardDescription>Configure Google Drive integration using a service account</CardDescription>
         </CardHeader>
-        <CardContent>
-          <p className="text-sm text-muted-foreground">
-            Email, Discord, Slack, and Telegram integrations coming soon.
-          </p>
+        <CardContent className="space-y-4">
+          <DriveCredentialsSection />
         </CardContent>
       </Card>
     </div>

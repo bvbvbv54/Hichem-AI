@@ -8,6 +8,7 @@ import {
   FolderKanban,
   Upload,
   Image,
+  Package,
   Settings,
   Shield,
   ChevronLeft,
@@ -21,7 +22,7 @@ const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/projects", label: "Projects", icon: FolderKanban },
   { href: "/upload", label: "Upload", icon: Upload },
-  { href: "/assets", label: "Assets", icon: Image },
+  { href: "/products", label: "Products", icon: Package },
 ];
 
 const bottomItems = [
