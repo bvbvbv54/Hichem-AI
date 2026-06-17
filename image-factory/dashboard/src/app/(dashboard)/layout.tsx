@@ -77,8 +77,15 @@ export default function DashboardLayout({
     return () => clearTimeout(timeout);
   }, []);
 
-  // Show loading state instead of returning null to prevent white screen
-  if ((!hydrated && !hydrationTimeout) || !token) {
+  // After hydration timeout, redirect to login if no token
+  useEffect(() => {
+    if (hydrationTimeout && !token) {
+      router.push("/login");
+    }
+  }, [hydrationTimeout, token, router]);
+
+  // Show loading state while hydrating (max 5s), then redirect to login if no token
+  if (!hydrated && !hydrationTimeout) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-background">
         <div className="flex flex-col items-center gap-4">
@@ -87,6 +94,10 @@ export default function DashboardLayout({
         </div>
       </div>
     );
+  }
+
+  if (!token) {
+    return null; // will be redirected by useEffect above
   }
 
   return (

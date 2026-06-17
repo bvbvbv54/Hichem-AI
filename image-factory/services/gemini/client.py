@@ -18,7 +18,10 @@ from configs.logging import get_logger
 
 logger = get_logger(__name__)
 
-genai.configure(api_key=settings.gemini_api_key)
+# Use google_api_key with fallback to gemini_api_key / nano_banana_api_key
+_api_key = settings.google_api_key or settings.gemini_api_key or settings.nano_banana_api_key
+if _api_key:
+    genai.configure(api_key=_api_key)
 
 
 class GeminiClient:

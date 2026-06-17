@@ -391,6 +391,9 @@ async def _update_product_link_status(url: str, status: str, **extra):
             link = result.scalar_one_or_none()
             if link:
                 updates = {"status": status, "updated_at": datetime.utcnow(), **extra}
+                if status == "scraped" or status == "completed":
+                    updates["error_message"] = ""
+                    updates["failure_type"] = ""
                 if status in ("completed", "failed", "error"):
                     updates["completed_at"] = datetime.utcnow()
                 if status == "scraped":

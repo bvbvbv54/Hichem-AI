@@ -41,6 +41,8 @@ class JobRepository:
         updates = {"status": status.value, "updated_at": datetime.utcnow(), **extra}
         if status in (JobStatus.COMPLETED, JobStatus.FAILED):
             updates["completed_at"] = datetime.utcnow()
+        if status == JobStatus.COMPLETED:
+            updates["error_message"] = ""
         return await self.update(job_id, updates)
 
     async def list(

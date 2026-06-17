@@ -35,14 +35,22 @@ async def get_dashboard_stats(session: AsyncSession = Depends(get_session)):
     )
     processing = processing_result.scalar() or 0
 
+    scraped_result = await session.execute(select(func.count(ProductLink.id)).where(ProductLink.status == "scraped"))
+    scraped_count = scraped_result.scalar() or 0
+
     completed_result = await session.execute(select(func.count(ProductLink.id)).where(ProductLink.status == "completed"))
     completed = completed_result.scalar() or 0
 
-    failed_result = await session.execute(select(func.count(ProductLink.id)).where(ProductLink.status == "failed"))
+    failed_result = await session.execute(select(func.count(ProductLink.id)).where(ProductLink.status.in_(["failed", "error"])))
     failed = failed_result.scalar() or 0
 
-    images_result = await session.execute(select(func.count(Asset.id)))
-    total_images = images_result.scalar() or 0
+    ai_images_result = await session.execute(select(func.count(Asset.id)))
+    ai_images = ai_images_result.scalar() or 0
+    scraped_images_result = await session.execute(
+        select(func.coalesce(func.sum(ProductLink.scraped_image_count), 0))
+    )
+    scraped_images = scraped_images_result.scalar() or 0
+    total_images = ai_images + scraped_images
 
     try:
         balancer = get_credit_balancer()
@@ -55,6 +63,7 @@ async def get_dashboard_stats(session: AsyncSession = Depends(get_session)):
         cost_per_image = 1.0
         total_cost_cents = 0.0
 
+    # Avg time: always calculate from historical completed jobs
     completed_jobs_result = await session.execute(
         select(Job).where(Job.status == "completed", Job.completed_at.isnot(None), Job.created_at.isnot(None))
     )
@@ -65,18 +74,34 @@ async def get_dashboard_stats(session: AsyncSession = Depends(get_session)):
     else:
         avg_time = 0
 
+    active_processing_jobs = await session.execute(
+        select(func.count(Job.id)).where(Job.status.in_(["processing", "generating", "storing", "delivering"]))
+    )
+    products_processing = active_processing_jobs.scalar() or 0
+
+    # Weighted completion: scraped=50%, completed=100%
+    if total > 0:
+        weighted_pct = round(((scraped_count * 50 + completed * 100) / (total * 100)) * 100)
+    else:
+        weighted_pct = 0
+
     return {
         "total_products": total,
         "products_in_queue": in_queue,
-        "products_processing": processing,
+        "products_processing": products_processing,
+        "products_scraped": scraped_count,
         "products_completed": completed,
         "products_failed": failed,
         "total_images": total_images,
-        "ai_credits_used": total_images * cost_per_image,
-        "estimated_cost": total_cost_cents,
+        "ai_images": ai_images,
+        "scraped_images": scraped_images,
+        "ai_credits_used": ai_images * cost_per_image,
+        "estimated_cost": ai_images * cost_per_image,
         "nano_banana_balance": balance,
         "nano_banana_cost_per_image": cost_per_image,
         "avg_processing_time_seconds": avg_time,
+        "completion_percentage": weighted_pct,
+        "scraped_count": scraped_count,
     }
 
 
@@ -221,6 +246,7 @@ async def get_captcha_intelligence(redis: aioredis.Redis = Depends(get_redis)):
     date_str = now.strftime("%Y-%m-%d")
     top: list[dict] = []
     total_today = 0
+    total_all_time = 0
 
     # Scan keys matching the pattern
     cursor = 0
@@ -266,6 +292,22 @@ async def get_captcha_intelligence(redis: aioredis.Redis = Depends(get_redis)):
         if week_total > 0:
             top.append({"domain": domain, "captcha_count": week_total})
 
+        # Get all-time count for this domain
+        domain_cursor = 0
+        while True:
+            domain_cursor, domain_keys = await redis.scan(domain_cursor, match=f"{captcha_stats_prefix}{domain}:*", count=500)
+            for dk in domain_keys:
+                dk_str = dk.decode() if isinstance(dk, bytes) else dk
+                stats = await redis.hgetall(dk_str)
+                if stats:
+                    for k, v in stats.items():
+                        key = k.decode() if isinstance(k, bytes) else k
+                        val = int(v.decode() if isinstance(v, bytes) else v)
+                        if key == "total":
+                            total_all_time += val
+            if domain_cursor == 0:
+                break
+
     top.sort(key=lambda x: x["captcha_count"], reverse=True)
     top = top[:10]
 
@@ -273,4 +315,5 @@ async def get_captcha_intelligence(redis: aioredis.Redis = Depends(get_redis)):
         "top_blocking_marketplaces": top,
         "daily_report": {entry["domain"]: {"total_captchas": entry["captcha_count"]} for entry in top},
         "total_captchas_today": total_today,
+        "total_captchas_all_time": total_all_time,
     }

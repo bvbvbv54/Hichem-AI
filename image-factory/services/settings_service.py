@@ -60,11 +60,36 @@ async def set_provider_api_key(key_name: str, value: str, session: AsyncSession)
     logger.info("provider_key_updated", key=key_name)
 
 
+async def get_google_api_key(session: AsyncSession) -> tuple[str, str]:
+    """Read google_api_key with fallback to gemini_api_key / nano_banana_api_key for backward compat."""
+    val, src = await get_setting_with_source("google_api_key", session)
+    if val:
+        return val, src
+    val, src = await get_setting_with_source("gemini_api_key", session)
+    if val:
+        return val, src
+    val, src = await get_setting_with_source("nano_banana_api_key", session)
+    if val:
+        return val, src
+    return "", "default"
+
+
+async def set_google_api_key(value: str, session: AsyncSession) -> None:
+    """Write google_api_key (also back-fill gemini_api_key for legacy consumers)."""
+    await set_setting("google_api_key", value, session)
+    # back-fill legacy keys so existing consumers still work
+    await set_setting("gemini_api_key", value, session)
+    await set_setting("nano_banana_api_key", value, session)
+
+
 async def get_provider_keys_status(session: AsyncSession) -> dict:
-    keys = ["nano_banana_api_key", "gemini_api_key", "claude_api_key", "openrouter_api_key"]
+    keys = ["google_api_key", "claude_api_key", "openrouter_api_key"]
     result = {}
     for key in keys:
-        val, src = await get_setting_with_source(key, session)
+        if key == "google_api_key":
+            val, src = await get_google_api_key(session)
+        else:
+            val, src = await get_setting_with_source(key, session)
         result[key] = {
             "configured": bool(val),
             "masked": val[:8] + "..." + val[-4:] if len(val) > 12 else "",
@@ -90,22 +115,12 @@ async def set_claude_config(model: str, max_tokens: int, temperature: float, ses
     await set_setting("claude_temperature", str(temperature), session)
 
 
-async def get_pricing_config(session: AsyncSession) -> dict:
-    img_cost, img_src = await get_setting_with_source("cost_per_image_cents", session, "1.0")
-    claude_cost, claude_src = await get_setting_with_source("cost_per_claude_call_cents", session, "0.03")
-    return {
-        "cost_per_image_cents": {"value": float(img_cost), "source": img_src},
-        "cost_per_claude_call_cents": {"value": float(claude_cost), "source": claude_src},
-    }
-
-
-async def set_pricing_config(cost_per_image_cents: float, cost_per_claude_call_cents: float, session: AsyncSession) -> None:
-    await set_setting("cost_per_image_cents", str(cost_per_image_cents), session)
-    await set_setting("cost_per_claude_call_cents", str(cost_per_claude_call_cents), session)
+# Pricing is now internal only — read from configs/pricing.py
 
 
 AVAILABLE_IMG2IMG_MODELS = [
     {"id": "google/imagen-4", "name": "Google Imagen 4", "provider": "replicate"},
+    {"id": "google-nano-banana", "name": "Google Nano Banana (Imagen)", "provider": "google"},
     {"id": "stability-ai/sdxl", "name": "Stability AI SDXL", "provider": "replicate"},
     {"id": "stability-ai/stable-diffusion-3.5", "name": "Stable Diffusion 3.5", "provider": "replicate"},
     {"id": "black-forest-labs/flux-dev", "name": "FLUX.1 Dev", "provider": "replicate"},
@@ -132,8 +147,10 @@ async def set_img2img_config(model: str, session: AsyncSession) -> None:
 
 async def get_storage_config(session: AsyncSession) -> dict:
     path, path_src = await get_setting_with_source("storage_local_path", session, settings.storage_local_path)
+    enabled, enabled_src = await get_setting_with_source("storage_enabled", session, "true" if settings.storage_enabled else "false")
     return {
         "storage_local_path": {"value": path, "source": path_src},
+        "storage_enabled": {"value": enabled.lower() == "true", "source": enabled_src},
     }
 
 
@@ -141,11 +158,14 @@ async def set_storage_config(path: str, session: AsyncSession) -> None:
     await set_setting("storage_local_path", path, session)
 
 
+async def set_storage_enabled(enabled: bool, session: AsyncSession) -> None:
+    await set_setting("storage_enabled", "true" if enabled else "false", session)
+
+
 async def get_all_settings(session: AsyncSession) -> dict:
     """Return all configurable settings grouped by category."""
     provider_keys = await get_provider_keys_status(session)
     claude_cfg = await get_claude_config(session)
-    pricing = await get_pricing_config(session)
     img2img = await get_img2img_config(session)
     storage = await get_storage_config(session)
     budget, budget_src = await get_setting_with_source("monthly_budget_cents", session, str(settings.monthly_budget_cents))
@@ -153,7 +173,6 @@ async def get_all_settings(session: AsyncSession) -> dict:
     return {
         "provider_keys": provider_keys,
         "claude": claude_cfg,
-        "pricing": pricing,
         "img2img": img2img,
         "storage": storage,
         "monthly_budget_cents": {"value": int(budget), "source": budget_src},

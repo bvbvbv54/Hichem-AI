@@ -63,12 +63,14 @@ export default function DashboardPage() {
   });
 
   const total = stats?.total_products ?? 0;
+  const scraped = stats?.products_scraped ?? stats?.scraped_count ?? 0;
   const completed = stats?.products_completed ?? 0;
   const failed = stats?.products_failed ?? 0;
   const processing = stats?.products_processing ?? 0;
   const inQueue = stats?.products_in_queue ?? 0;
   const totalImages = stats?.total_images ?? 0;
-  const doneRate = total > 0 ? Math.round(((completed + failed) / total) * 100) : 0;
+  const aiImages = stats?.ai_images ?? 0;
+  const doneRate = stats?.completion_percentage ?? (total > 0 ? Math.round(((completed + failed) / total) * 100) : 0);
 
   const isLoading = statsLoading;
 
@@ -121,6 +123,11 @@ export default function DashboardPage() {
             </div>
             <div className="grid grid-cols-2 gap-x-8 gap-y-2 text-sm flex-1">
               <div className="flex items-center gap-2">
+                <span className="h-2 w-2 rounded-full bg-indigo-500" />
+                <span className="text-muted-foreground">Scraped</span>
+                <span className="font-semibold ml-auto">{scraped}</span>
+              </div>
+              <div className="flex items-center gap-2">
                 <span className="h-2 w-2 rounded-full bg-primary" />
                 <span className="text-muted-foreground">Completed</span>
                 <span className="font-semibold ml-auto">{completed}</span>
@@ -148,10 +155,10 @@ export default function DashboardPage() {
       {/* Stat cards row */}
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
         <StatCard icon={Package} label="Total Products" value={total} />
-        <StatCard icon={Image} label="Images Generated" value={totalImages} />
-        <StatCard icon={TrendingUp} label="AI Credits" value={stats?.ai_credits_used ?? 0} />
-        <StatCard icon={Timer} label="Avg Time" value={stats?.avg_processing_time_seconds ? `${Math.round(stats.avg_processing_time_seconds / 60)}m` : "\u2014"} />
-        <StatCard icon={ShieldAlert} label="CAPTCHAs Today" value={captchaData?.total_captchas_today ?? 0} />
+        <StatCard icon={Image} label="Total Images" value={`${aiImages} AI + ${stats?.scraped_images ?? 0} scraped`} />
+        <StatCard icon={TrendingUp} label="AI Credits Used" value={stats?.ai_credits_used ?? 0} />
+        <StatCard icon={Timer} label="Avg Time" value={stats?.avg_processing_time_seconds && stats?.products_processing > 0 ? `${Math.round(stats.avg_processing_time_seconds / 60)}m` : "\u2014"} />
+        <StatCard icon={ShieldAlert} label="CAPTCHAs Solved" value={captchaData?.total_captchas_all_time ?? captchaData?.total_captchas_today ?? 0} />
       </div>
 
       {/* Queue + Batch + CAPTCHA + Admin */}
@@ -289,20 +296,27 @@ export default function DashboardPage() {
                   <span className="text-xs text-muted-foreground">credits remain</span>
                 </div>
                 <p className="text-xs text-muted-foreground mt-1">
-                  {scrapflyUsage.key_count ?? 0} key{(scrapflyUsage.key_count ?? 0) !== 1 ? "s" : ""} &middot; ~{scrapflyUsage.cost_per_product ?? 9} pts/product
+                  {scrapflyUsage.key_count ?? 0} key{(scrapflyUsage.key_count ?? 0) !== 1 ? "s" : ""} &middot; {scrapflyUsage.cost_per_scrape ?? 6} pts/scrape
                 </p>
+                <div className="flex justify-between text-[10px] text-muted-foreground mt-1">
+                  <span>{scrapflyUsage.total_credits ?? 0} total credits</span>
+                  <span>{scrapflyUsage.total_cost ?? 0} used</span>
+                </div>
+                <div className="w-full bg-muted rounded-full h-1.5 mt-1">
+                  <div className="h-1.5 rounded-full bg-primary transition-all" style={{width: `${Math.min((scrapflyUsage.total_cost / scrapflyUsage.total_credits) * 100, 100)}%`}} />
+                </div>
                 {!scrapflyUsage.has_usage_data && (
                   <p className="text-xs text-muted-foreground mt-1">No requests yet - run a scrape to see usage</p>
                 )}
-                <div className="mt-1">
+                <div className="mt-2 space-y-1">
                   {(scrapflyUsage.per_key_summary || []).map((k: any) => (
-                    <div key={k.key} className="flex justify-between text-[10px] text-muted-foreground">
-                      <span className="font-mono truncate max-w-[140px]">{k.key}</span>
-                      <span>{k.status === "tracked" ? `${k.remaining} left` : "N/A (untracked)"}</span>
+                    <div key={k.key} className="flex items-center justify-between text-[10px] text-muted-foreground">
+                      <span className="font-mono truncate max-w-[140px]" title={k.key}>{k.key}</span>
+                      <span>{k.remaining}/{scrapflyUsage.total_credits / scrapflyUsage.key_count}</span>
                     </div>
                   ))}
                 </div>
-                {scrapflyUsage.scrapes_remaining_actual > 0 && scrapflyUsage.scrapes_remaining_actual < 10 && (
+                {scrapflyUsage.scrapes_remaining_actual > 0 && scrapflyUsage.scrapes_remaining_actual < 50 && (
                   <p className="text-xs text-amber-500 font-medium mt-1">Low credits remaining</p>
                 )}
                 {scrapflyUsage.has_usage_data && scrapflyUsage.scrapes_remaining_actual === 0 && (
@@ -328,9 +342,9 @@ function StatCard({ icon: Icon, label, value }: { icon: any; label: string; valu
         <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
           <Icon className="h-5 w-5 text-primary" />
         </div>
-        <div>
+        <div className="min-w-0">
           <div className="text-lg font-bold">{value}</div>
-          <div className="text-xs text-muted-foreground">{label}</div>
+          <div className="text-xs text-muted-foreground truncate">{label}</div>
         </div>
       </CardContent>
     </Card>

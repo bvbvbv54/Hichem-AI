@@ -29,9 +29,10 @@ class VectorSearch:
     async def generate_embedding(self, text: str) -> list[float]:
         try:
             from configs.settings import settings as app_settings
-            if app_settings.gemini_api_key:
+            api_key = app_settings.google_api_key or app_settings.gemini_api_key or app_settings.nano_banana_api_key
+            if api_key:
                 import google.generativeai as genai
-                genai.configure(api_key=app_settings.gemini_api_key)
+                genai.configure(api_key=api_key)
                 model = genai.GenerativeModel("gemini-2.0-flash")
                 result = model.generate_content(f"Generate a semantic embedding vector representation of: {text[:500]}")
                 if result and result.text:

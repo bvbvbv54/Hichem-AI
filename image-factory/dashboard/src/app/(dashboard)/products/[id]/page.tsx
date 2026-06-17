@@ -146,7 +146,7 @@ export default function ProductDetailPage() {
               {scraped_images.map((img: any) => (
                 <ImageThumb
                   key={img.id}
-                  src={`/api/v1/assets/${img.id}/download`}
+                  src={`/api/v1/assets/${img.id}/file`}
                   label={img.filename}
                 />
               ))}

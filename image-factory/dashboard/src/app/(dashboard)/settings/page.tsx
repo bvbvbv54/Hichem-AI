@@ -9,10 +9,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "@/hooks/use-toast";
-import { Key, Cloud, RefreshCw, Trash2, Eye, EyeOff, CheckCircle2, XCircle, Save, ExternalLink, DollarSign, Settings2, Sliders, Image, FolderOpen, Zap } from "lucide-react";
+import { Key, Cloud, RefreshCw, Trash2, Eye, EyeOff, CheckCircle2, XCircle, Save, DollarSign, Image, FolderOpen, Zap } from "lucide-react";
 
 function DriveCredentialsSection() {
   const [jsonInput, setJsonInput] = useState("");
@@ -110,7 +111,7 @@ function DriveCredentialsSection() {
           <div className="relative">
             <textarea
               className="flex min-h-[120px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
-              placeholder='Paste the JSON key here'
+              placeholder="Paste the JSON key here"
               value={jsonInput}
               onChange={(e) => setJsonInput(e.target.value)}
             />
@@ -134,7 +135,7 @@ function MonthlyBudgetSection() {
 
   const { data: budgetData, isLoading } = useQuery({
     queryKey: ["monthly-budget"],
-    queryFn: () => fetch("/api/v1/admin/budget").then(r => r.json()),
+    queryFn: () => authFetch("/api/v1/admin/budget").then(r => r.json()),
   });
 
   useEffect(() => {
@@ -148,9 +149,8 @@ function MonthlyBudgetSection() {
     if (cents < 0 || isNaN(cents)) return;
     setSavingBudget(true);
     try {
-      const res = await fetch("/api/v1/admin/budget", {
+      const res = await authFetch("/api/v1/admin/budget", {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ monthly_budget_cents: cents }),
       });
       if (!res.ok) throw new Error(await res.text());
@@ -190,320 +190,6 @@ function MonthlyBudgetSection() {
       {budgetData?.source && (
         <p className="text-xs text-muted-foreground">Source: {budgetData.source === "database" ? "Saved in database (changeable here)" : "From environment config"}</p>
       )}
-    </div>
-  );
-}
-
-function ClaudeConfigSection() {
-  const [model, setModel] = useState("claude-sonnet-4-20250514");
-  const [maxTokens, setMaxTokens] = useState("4096");
-  const [temperature, setTemperature] = useState("0.7");
-  const [saving, setSaving] = useState(false);
-
-  const { data: claudeData, isLoading } = useQuery({
-    queryKey: ["claude-config"],
-    queryFn: () => fetch("/api/v1/admin/settings/claude").then(r => r.json()),
-  });
-
-  useEffect(() => {
-    if (claudeData) {
-      setModel(claudeData.claude_model?.value || "claude-sonnet-4-20250514");
-      setMaxTokens(String(claudeData.claude_max_tokens?.value || 4096));
-      setTemperature(String(claudeData.claude_temperature?.value || 0.7));
-    }
-  }, [claudeData]);
-
-  const save = async () => {
-    setSaving(true);
-    try {
-      const res = await fetch("/api/v1/admin/settings/claude", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ claude_model: model, claude_max_tokens: parseInt(maxTokens), claude_temperature: parseFloat(temperature) }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      toast({ title: "Claude config updated" });
-    } catch (err: any) {
-      toast({ title: "Failed to update", description: err.message, variant: "destructive" });
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  if (isLoading) return <Skeleton className="h-24 w-full" />;
-
-  return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-3 gap-3">
-        <div>
-          <Label>Model</Label>
-          <Input value={model} onChange={e => setModel(e.target.value)} className="mt-1 font-mono text-xs" />
-        </div>
-        <div>
-          <Label>Max Tokens</Label>
-          <Input type="number" min="1" value={maxTokens} onChange={e => setMaxTokens(e.target.value)} className="mt-1" />
-        </div>
-        <div>
-          <Label>Temperature</Label>
-          <Input type="number" min="0" max="1" step="0.1" value={temperature} onChange={e => setTemperature(e.target.value)} className="mt-1" />
-        </div>
-      </div>
-      <Button onClick={save} disabled={saving}><Save className="h-4 w-4 mr-1" /> Save Claude Config</Button>
-      {claudeData?.claude_model?.source && (
-        <p className="text-xs text-muted-foreground">Source: {claudeData.claude_model.source}</p>
-      )}
-    </div>
-  );
-}
-
-function PricingSection() {
-  const [costPerImage, setCostPerImage] = useState("1.0");
-  const [costPerClaude, setCostPerClaude] = useState("0.03");
-  const [saving, setSaving] = useState(false);
-
-  const { data: pricingData, isLoading } = useQuery({
-    queryKey: ["pricing-config"],
-    queryFn: () => fetch("/api/v1/admin/settings/pricing").then(r => r.json()),
-  });
-
-  useEffect(() => {
-    if (pricingData) {
-      setCostPerImage(String(pricingData.cost_per_image_cents?.value || 1.0));
-      setCostPerClaude(String(pricingData.cost_per_claude_call_cents?.value || 0.03));
-    }
-  }, [pricingData]);
-
-  const save = async () => {
-    setSaving(true);
-    try {
-      const res = await fetch("/api/v1/admin/settings/pricing", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          cost_per_image_cents: parseFloat(costPerImage),
-          cost_per_claude_call_cents: parseFloat(costPerClaude),
-        }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      toast({ title: "Pricing updated", description: "Cost values saved to database" });
-    } catch (err: any) {
-      toast({ title: "Failed to update pricing", description: err.message, variant: "destructive" });
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  if (isLoading) return <Skeleton className="h-16 w-full" />;
-
-  return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <Label>Cost per Image (cents)</Label>
-          <Input type="number" min="0" step="0.01" value={costPerImage} onChange={e => setCostPerImage(e.target.value)} className="mt-1" />
-        </div>
-        <div>
-          <Label>Cost per Claude Call (cents)</Label>
-          <Input type="number" min="0" step="0.001" value={costPerClaude} onChange={e => setCostPerClaude(e.target.value)} className="mt-1" />
-        </div>
-      </div>
-      <Button onClick={save} disabled={saving}><Save className="h-4 w-4 mr-1" /> Save Pricing</Button>
-      {pricingData?.cost_per_image_cents?.source && (
-        <p className="text-xs text-muted-foreground">Source: {pricingData.cost_per_image_cents.source}</p>
-      )}
-    </div>
-  );
-}
-
-function ScrapflyKeysSection() {
-  const [newKey, setNewKey] = useState("");
-  const [keys, setKeys] = useState<any[]>([]);
-  const queryClient = useQueryClient();
-
-  const { data: keysData, isLoading: keysLoading } = useQuery({
-    queryKey: ["scrapfly-keys"],
-    queryFn: () => fetch("/api/v1/admin/scrapfly/keys").then(r => r.json()),
-    refetchInterval: 30000,
-  });
-
-  useEffect(() => {
-    if (keysData?.keys) setKeys(keysData.keys);
-  }, [keysData]);
-
-  const addKey = async () => {
-    if (!newKey.trim()) return;
-    try {
-      const res = await fetch("/api/v1/admin/scrapfly/keys", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: newKey.trim() }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      setNewKey("");
-      toast({ title: "ScrapFly key added" });
-      queryClient.invalidateQueries({ queryKey: ["scrapfly-keys"] });
-      queryClient.invalidateQueries({ queryKey: ["scrapfly-usage"] });
-    } catch (err: any) {
-      toast({ title: "Failed to add key", description: err.message, variant: "destructive" });
-    }
-  };
-
-  const removeKey = async (key: string) => {
-    try {
-      const res = await fetch("/api/v1/admin/scrapfly/keys", {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      toast({ title: "ScrapFly key removed" });
-      queryClient.invalidateQueries({ queryKey: ["scrapfly-keys"] });
-      queryClient.invalidateQueries({ queryKey: ["scrapfly-usage"] });
-    } catch (err: any) {
-      toast({ title: "Failed to remove key", description: err.message, variant: "destructive" });
-    }
-  };
-
-  if (keysLoading) return <Skeleton className="h-20 w-full" />;
-
-  return (
-    <div className="space-y-3">
-      <div className="space-y-2">
-        {keys.map((k: any) => (
-          <div key={k.key_preview} className="flex items-center justify-between rounded-lg border p-2.5">
-            <div className="flex items-center gap-2">
-              <code className="text-xs font-mono text-muted-foreground">{k.key_preview}</code>
-              <Badge className="text-[10px] bg-muted text-muted-foreground">{k.used} used</Badge>
-            </div>
-            <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => removeKey(k.key_preview)}>
-              <Trash2 className="h-3.5 w-3.5 text-destructive" />
-            </Button>
-          </div>
-        ))}
-        {keys.length === 0 && (
-          <p className="text-xs text-muted-foreground">No ScrapFly API keys configured. Add one below.</p>
-        )}
-      </div>
-      <div className="flex gap-2">
-        <Input
-          placeholder="scp-live-xxxx..."
-          value={newKey}
-          onChange={(e) => setNewKey(e.target.value)}
-          className="font-mono text-xs"
-        />
-        <Button onClick={addKey} disabled={!newKey.trim()} size="sm">
-          Add Key
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-function ScrapflyUsageSection() {
-  const { data: usage, isLoading } = useQuery({
-    queryKey: ["scrapfly-usage"],
-    queryFn: () => api.getScrapflyUsage(),
-    refetchInterval: 30000,
-  });
-
-  if (isLoading) return <Skeleton className="h-20 w-full" />;
-
-  const total = usage?.total_cost ?? 0;
-  const remaining = usage?.remaining_credits ?? 0;
-  const budget = usage?.monthly_budget ?? 3000;
-  const budgetLeft = usage?.budget_left ?? budget;
-  const possible = usage?.products_possible ?? 0;
-  const pct = budget > 0 ? Math.round((total / budget) * 100) : 0;
-  const keyCount = usage?.key_count ?? 0;
-  const scrapesBudget = usage?.scrapes_remaining_budget ?? 0;
-  const scrapesActual = usage?.scrapes_remaining_actual ?? 0;
-  const avgCost = usage?.avg_cost_per_request ?? 9;
-  const costPerProduct = usage?.cost_per_product ?? 9;
-
-  return (
-    <div className="space-y-3">
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
-        <div className="rounded-lg border p-3">
-          <p className="text-2xl font-bold">{total}</p>
-          <p className="text-xs text-muted-foreground">Credits used</p>
-        </div>
-        <div className="rounded-lg border p-3">
-          <p className="text-2xl font-bold">{remaining}</p>
-          <p className="text-xs text-muted-foreground">Credits remaining</p>
-        </div>
-        <div className="rounded-lg border p-3">
-          <p className="text-2xl font-bold">{scrapesActual}</p>
-          <p className="text-xs text-muted-foreground">Scrapes left (actual)</p>
-        </div>
-        <div className="rounded-lg border p-3">
-          <p className="text-2xl font-bold">{scrapesBudget}</p>
-          <p className="text-xs text-muted-foreground">Scrapes left (budget)</p>
-        </div>
-      </div>
-      <div className="flex items-center justify-between text-xs text-muted-foreground border-t border-muted-foreground/10 pt-2">
-        <span>Avg cost: {avgCost} pts/request</span>
-        <span>Cost per product: {costPerProduct} pts</span>
-        <span>{keyCount} key{keyCount !== 1 ? "s" : ""}</span>
-        <span>Used {pct}% of {budget} budget</span>
-      </div>
-      {pct > 80 && <p className="text-xs text-red-500 font-medium">Warning: over 80% of monthly Scrapfly budget consumed</p>}
-      {total === 0 && <p className="text-xs text-muted-foreground">No Scrapfly requests yet this month.</p>}
-    </div>
-  );
-}
-
-function StorageSection() {
-  const [storagePath, setStoragePath] = useState("");
-  const [saving, setSaving] = useState(false);
-
-  const { data: storageData, isLoading } = useQuery({
-    queryKey: ["storage-config"],
-    queryFn: () => api.getStorageSettings(),
-  });
-
-  useEffect(() => {
-    if (storageData?.storage_local_path?.value) {
-      setStoragePath(storageData.storage_local_path.value);
-    }
-  }, [storageData]);
-
-  const save = async () => {
-    if (!storagePath.trim()) return;
-    setSaving(true);
-    try {
-      await api.updateStorageSettings(storagePath.trim());
-      toast({ title: "Output directory updated", description: `Storage path set to ${storagePath}` });
-    } catch (err: any) {
-      toast({ title: "Failed to update", description: err.message, variant: "destructive" });
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  if (isLoading) return <Skeleton className="h-16 w-full" />;
-
-  return (
-    <div className="space-y-4">
-      <div className="flex items-end gap-3">
-        <div className="flex-1">
-          <Label>Output Directory Path</Label>
-          <Input
-            value={storagePath}
-            onChange={e => setStoragePath(e.target.value)}
-            className="mt-1 font-mono text-xs"
-            placeholder="/app/outputs"
-          />
-        </div>
-        <Button onClick={save} disabled={!storagePath.trim() || saving}>
-          <Save className="h-4 w-4 mr-1" /> Save Path
-        </Button>
-      </div>
-      {storageData?.storage_local_path?.source && (
-        <p className="text-xs text-muted-foreground">Source: {storageData.storage_local_path.source}</p>
-      )}
-      <p className="text-xs text-muted-foreground">
-        Products will be saved under this directory in sub-folders named after each product.
-      </p>
     </div>
   );
 }
@@ -566,19 +252,233 @@ function Img2imgSection() {
   );
 }
 
+function StorageSection() {
+  const [enabled, setEnabled] = useState(true);
+  const [toggling, setToggling] = useState(false);
+
+  const { data: storageData, isLoading } = useQuery({
+    queryKey: ["storage-config"],
+    queryFn: () => api.getStorageSettings(),
+  });
+
+  useEffect(() => {
+    if (storageData) {
+      setEnabled(storageData.storage_enabled?.value !== false);
+    }
+  }, [storageData]);
+
+  const toggleEnabled = async () => {
+    setToggling(true);
+    try {
+      const res = await authFetch("/api/v1/admin/settings/storage/toggle", {
+        method: "PUT",
+        body: JSON.stringify({ enabled: !enabled }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setEnabled(!enabled);
+      toast({ title: `Storage ${!enabled ? "enabled" : "disabled"}` });
+    } catch (err: any) {
+      toast({ title: "Failed to toggle storage", description: err.message, variant: "destructive" });
+    } finally {
+      setToggling(false);
+    }
+  };
+
+  if (isLoading) return <Skeleton className="h-16 w-full" />;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <Label>Enable Storage</Label>
+          <p className="text-xs text-muted-foreground">Toggle file output on/off</p>
+        </div>
+        <Switch checked={enabled} onCheckedChange={toggleEnabled} disabled={toggling} />
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Products saved locally in default output directory. Directory name can be configured via Google Drive Sync.
+      </p>
+    </div>
+  );
+}
+
+function ScrapflyKeysSection() {
+  const [newKey, setNewKey] = useState("");
+  const [keys, setKeys] = useState<any[]>([]);
+  const [adding, setAdding] = useState(false);
+  const queryClient = useQueryClient();
+
+  const { data: keysData, isLoading: keysLoading } = useQuery({
+    queryKey: ["scrapfly-keys"],
+    queryFn: () => fetchKeys(),
+    refetchInterval: 30000,
+  });
+
+  useEffect(() => {
+    if (keysData?.keys) setKeys(keysData.keys);
+  }, [keysData]);
+
+  const fetchKeys = async () => {
+    const res = await authFetch("/api/v1/admin/scrapfly/keys");
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  };
+
+  const addKey = async () => {
+    if (!newKey.trim()) return;
+    setAdding(true);
+    try {
+      const res = await authFetch("/api/v1/admin/scrapfly/keys", {
+        method: "POST",
+        body: JSON.stringify({ key: newKey.trim() }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setNewKey("");
+      toast({ title: "ScrapFly key added" });
+      queryClient.invalidateQueries({ queryKey: ["scrapfly-keys"] });
+      queryClient.invalidateQueries({ queryKey: ["scrapfly-usage"] });
+    } catch (err: any) {
+      toast({ title: "Failed to add key", description: err.message, variant: "destructive" });
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const removeKey = async (key: string) => {
+    try {
+      const res = await authFetch("/api/v1/admin/scrapfly/keys", {
+        method: "DELETE",
+        body: JSON.stringify({ key }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      toast({ title: "ScrapFly key removed" });
+      queryClient.invalidateQueries({ queryKey: ["scrapfly-keys"] });
+      queryClient.invalidateQueries({ queryKey: ["scrapfly-usage"] });
+    } catch (err: any) {
+      toast({ title: "Failed to remove key", description: err.message, variant: "destructive" });
+    }
+  };
+
+  if (keysLoading) return <Skeleton className="h-20 w-full" />;
+
+  return (
+    <div className="space-y-3">
+      <div className="space-y-2">
+        {keys.map((k: any) => (
+          <div key={k.key_preview} className="flex items-center justify-between rounded-lg border p-2.5">
+            <div className="flex items-center gap-2">
+              <code className="text-xs font-mono text-muted-foreground">{k.key_preview}</code>
+              <Badge className="text-[10px] bg-muted text-muted-foreground">{k.used} used</Badge>
+            </div>
+            <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => removeKey(k.full_key || k.key_preview)}>
+              <Trash2 className="h-3.5 w-3.5 text-destructive" />
+            </Button>
+          </div>
+        ))}
+        {keys.length === 0 && (
+          <p className="text-xs text-muted-foreground">No ScrapFly API keys configured. Add one below.</p>
+        )}
+      </div>
+      <div className="flex gap-2">
+        <Input
+          placeholder="scp-live-xxxx..."
+          value={newKey}
+          onChange={(e) => setNewKey(e.target.value)}
+          className="font-mono text-xs"
+        />
+        <Button onClick={addKey} disabled={!newKey.trim() || adding} size="sm">
+          Add Key
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function ScrapflyUsageSection() {
+  const { data: usage, isLoading } = useQuery({
+    queryKey: ["scrapfly-usage"],
+    queryFn: () => api.getScrapflyUsage(),
+    refetchInterval: 30000,
+  });
+
+  if (isLoading) return <Skeleton className="h-20 w-full" />;
+
+  const total = usage?.total_cost ?? 0;
+  const remaining = usage?.remaining_credits ?? 0;
+  const budget = usage?.monthly_budget ?? 3000;
+  const budgetLeft = usage?.budget_left ?? budget;
+  const possible = usage?.products_possible ?? 0;
+  const pct = budget > 0 ? Math.round((total / budget) * 100) : 0;
+  const keyCount = usage?.key_count ?? 0;
+  const scrapesBudget = usage?.scrapes_remaining_budget ?? 0;
+  const scrapesActual = usage?.scrapes_remaining_actual ?? 0;
+  const avgCost = usage?.avg_cost_per_request ?? 9;
+  const costPerProduct = usage?.cost_per_product ?? 9;
+
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
+        <div className="rounded-lg border p-3">
+          <p className="text-2xl font-bold">{total}</p>
+          <p className="text-xs text-muted-foreground">Credits used</p>
+        </div>
+        <div className="rounded-lg border p-3">
+          <p className="text-2xl font-bold">{remaining}</p>
+          <p className="text-xs text-muted-foreground">Credits remaining</p>
+        </div>
+        <div className="rounded-lg border p-3">
+          <p className="text-2xl font-bold">{scrapesActual}</p>
+          <p className="text-xs text-muted-foreground">Scrapes left (actual)</p>
+        </div>
+        <div className="rounded-lg border p-3">
+          <p className="text-2xl font-bold">{scrapesBudget}</p>
+          <p className="text-xs text-muted-foreground">Scrapes left (budget)</p>
+        </div>
+      </div>
+      <div className="flex items-center justify-between text-xs text-muted-foreground border-t border-muted-foreground/10 pt-2">
+        <span>Avg cost: {avgCost} pts/request</span>
+        <span>Cost per product: {costPerProduct} pts</span>
+        <span>{keyCount} key{keyCount !== 1 ? "s" : ""}</span>
+        <span>Used {pct}% of {budget} budget</span>
+      </div>
+      {pct > 80 && <p className="text-xs text-red-500 font-medium">Warning: over 80% of monthly Scrapfly budget consumed</p>}
+      {total === 0 && <p className="text-xs text-muted-foreground">No Scrapfly requests yet this month.</p>}
+    </div>
+  );
+}
+
+async function getAuthToken(): Promise<string | null> {
+  if (typeof window === "undefined") return null;
+  const stored = localStorage.getItem("auth_session");
+  if (!stored) return null;
+  try {
+    const parsed = JSON.parse(stored);
+    return parsed?.state?.token ?? parsed?.token ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function authFetch(url: string, options: RequestInit = {}): Promise<Response> {
+  const token = await getAuthToken();
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(options.headers as Record<string, string>),
+  };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  return fetch(url, { ...options, headers });
+}
+
 export default function SettingsPage() {
-  const [nanoBananaKey, setNanoBananaKey] = useState("");
-  const [geminiKey, setGeminiKey] = useState("");
+  const [googleKey, setGoogleKey] = useState("");
   const [claudeKey, setClaudeKey] = useState("");
-  const [savedNanoKey, setSavedNanoKey] = useState("");
-  const [savedGeminiKey, setSavedGeminiKey] = useState("");
-  const [savedClaudeKey, setSavedClaudeKey] = useState("");
-  const [showNanoKey, setShowNanoKey] = useState(false);
-  const [showGeminiKey, setShowGeminiKey] = useState(false);
+  const [savedGoogleKey, setSavedGoogleKey] = useState(false);
+  const [savedClaudeKey, setSavedClaudeKey] = useState(false);
+  const [showGoogleKey, setShowGoogleKey] = useState(false);
   const [showClaudeKey, setShowClaudeKey] = useState(false);
-  const [savingNano, setSavingNano] = useState(false);
-  const [savingGemini, setSavingGemini] = useState(false);
+  const [savingGoogle, setSavingGoogle] = useState(false);
   const [savingClaude, setSavingClaude] = useState(false);
+  const [googleKeyError, setGoogleKeyError] = useState("");
 
   const queryClient = useQueryClient();
 
@@ -588,56 +488,46 @@ export default function SettingsPage() {
   });
 
   useEffect(() => {
-    if (providerKeys?.nano_banana_api_key?.configured) {
-      setSavedNanoKey("configured");
-    }
-    if (providerKeys?.gemini_api_key?.configured) {
-      setSavedGeminiKey("configured");
+    if (providerKeys?.google_api_key?.configured) {
+      setSavedGoogleKey(true);
     }
     if (providerKeys?.claude_api_key?.configured) {
-      setSavedClaudeKey("configured");
+      setSavedClaudeKey(true);
     }
   }, [providerKeys]);
 
-  const saveNanoKey = async () => {
-    if (!nanoBananaKey.trim()) return;
-    setSavingNano(true);
-    try {
-      const result = await fetch("/api/v1/admin/provider-keys/nano-banana", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: nanoBananaKey.trim() }),
-      });
-      if (!result.ok) throw new Error(await result.text());
-      setSavedNanoKey("configured");
-      setNanoBananaKey("");
-      toast({ title: "Nano Banana API key saved to server" });
-      queryClient.invalidateQueries({ queryKey: ["provider-keys"] });
-    } catch (err: any) {
-      toast({ title: "Failed to save key", description: err.message, variant: "destructive" });
-    } finally {
-      setSavingNano(false);
-    }
+  const validateGoogleKey = (key: string): string => {
+    if (!key.trim()) return "Key is required";
+    if (!key.trim().startsWith("AIza")) return "Google API keys must start with 'AIza'";
+    if (key.trim().length < 20) return "Key seems too short";
+    return "";
   };
 
-  const saveGeminiKey = async () => {
-    if (!geminiKey.trim()) return;
-    setSavingGemini(true);
+  const saveGoogleKey = async () => {
+    const error = validateGoogleKey(googleKey);
+    if (error) {
+      setGoogleKeyError(error);
+      return;
+    }
+    setGoogleKeyError("");
+    setSavingGoogle(true);
     try {
-      const result = await fetch("/api/v1/admin/provider-keys/gemini", {
+      const result = await authFetch("/api/v1/admin/provider-keys/google", {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: geminiKey.trim() }),
+        body: JSON.stringify({ key: googleKey.trim() }),
       });
-      if (!result.ok) throw new Error(await result.text());
-      setSavedGeminiKey("configured");
-      setGeminiKey("");
-      toast({ title: "Gemini API key saved to server" });
+      if (!result.ok) {
+        const text = await result.text();
+        throw new Error(text);
+      }
+      setSavedGoogleKey(true);
+      setGoogleKey("");
+      toast({ title: "Google AI API key saved" });
       queryClient.invalidateQueries({ queryKey: ["provider-keys"] });
     } catch (err: any) {
       toast({ title: "Failed to save key", description: err.message, variant: "destructive" });
     } finally {
-      setSavingGemini(false);
+      setSavingGoogle(false);
     }
   };
 
@@ -645,15 +535,14 @@ export default function SettingsPage() {
     if (!claudeKey.trim()) return;
     setSavingClaude(true);
     try {
-      const result = await fetch("/api/v1/admin/provider-keys/claude", {
+      const result = await authFetch("/api/v1/admin/provider-keys/claude", {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ key: claudeKey.trim() }),
       });
       if (!result.ok) throw new Error(await result.text());
-      setSavedClaudeKey("configured");
+      setSavedClaudeKey(true);
       setClaudeKey("");
-      toast({ title: "Claude API key saved to server" });
+      toast({ title: "Claude API key saved" });
       queryClient.invalidateQueries({ queryKey: ["provider-keys"] });
     } catch (err: any) {
       toast({ title: "Failed to save key", description: err.message, variant: "destructive" });
@@ -669,93 +558,61 @@ export default function SettingsPage() {
         <p className="text-muted-foreground">Configure API keys and integrations</p>
       </div>
 
-      {/* API Keys - Nano Banana & Gemini */}
+      {/* AI Provider Keys */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Key className="h-5 w-5" />
             AI Provider Keys
           </CardTitle>
-          <CardDescription>Configure your AI provider API keys for image generation and text processing. Keys are stored securely on the server.</CardDescription>
+          <CardDescription>Configure API keys for AI providers. Keys are stored securely on the server.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          {/* Google AI API Key (shared for Gemini + Nano Banana) */}
           <div className="space-y-2">
-            <Label>Nano Banana API Key</Label>
-            <div className="flex items-center gap-1 mb-1">
-              <a
-                href="https://aistudio.google.com/app/apikey"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-xs text-primary hover:underline flex items-center gap-1"
-              >
-                <ExternalLink className="h-3 w-3" /> Get your Nano Banana / Gemini API key
-              </a>
-            </div>
+            <Label>Google AI API Key</Label>
+            <p className="text-xs text-muted-foreground">Shared key for Gemini and Nano Banana image generation. Get one from <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Google AI Studio</a>.</p>
             <div className="flex gap-2">
               <div className="relative flex-1">
                 <Input
-                  type={showNanoKey ? "text" : "password"}
-                  placeholder={savedNanoKey === "configured" ? "Key is configured on server" : "Enter your Nano Banana API key"}
-                  value={nanoBananaKey}
-                  onChange={(e) => setNanoBananaKey(e.target.value)}
+                  type={showGoogleKey ? "text" : "password"}
+                  placeholder={savedGoogleKey ? "Key is configured on server" : "Enter your Google AI API key (starts with AIza...)"}
+                  value={googleKey}
+                  onChange={(e) => {
+                    setGoogleKey(e.target.value);
+                    if (googleKeyError) setGoogleKeyError("");
+                  }}
+                  className={googleKeyError ? "border-red-500" : ""}
                 />
                 <Button
                   variant="ghost"
                   size="icon"
                   className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7"
-                  onClick={() => setShowNanoKey(!showNanoKey)}
+                  onClick={() => setShowGoogleKey(!showGoogleKey)}
                 >
-                  {showNanoKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  {showGoogleKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                 </Button>
               </div>
-              <Button onClick={saveNanoKey} disabled={!nanoBananaKey.trim() || savingNano}>
+              <Button onClick={saveGoogleKey} disabled={!googleKey.trim() || savingGoogle}>
                 <Save className="h-4 w-4 mr-1" /> Save
               </Button>
             </div>
-            {savedNanoKey === "configured" && (
+            {googleKeyError && <p className="text-xs text-red-500">{googleKeyError}</p>}
+            {savedGoogleKey && !googleKey.trim() && (
               <p className="text-xs text-green-600 font-medium">Key is configured on server</p>
             )}
           </div>
 
           <Separator />
 
-          <div className="space-y-2">
-            <Label>Gemini API Key</Label>
-            <div className="flex gap-2">
-              <div className="relative flex-1">
-                <Input
-                  type={showGeminiKey ? "text" : "password"}
-                  placeholder={savedGeminiKey === "configured" ? "Key is configured on server" : "Enter your Google Gemini API key"}
-                  value={geminiKey}
-                  onChange={(e) => setGeminiKey(e.target.value)}
-                />
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7"
-                  onClick={() => setShowGeminiKey(!showGeminiKey)}
-                >
-                  {showGeminiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </Button>
-              </div>
-              <Button onClick={saveGeminiKey} disabled={!geminiKey.trim() || savingGemini}>
-                <Save className="h-4 w-4 mr-1" /> Save
-              </Button>
-            </div>
-            {savedGeminiKey === "configured" && (
-              <p className="text-xs text-green-600 font-medium">Key is configured on server</p>
-            )}
-          </div>
-
-          <Separator />
-
+          {/* Claude API Key */}
           <div className="space-y-2">
             <Label>Claude API Key</Label>
             <div className="flex gap-2">
               <div className="relative flex-1">
                 <Input
                   type={showClaudeKey ? "text" : "password"}
-                  placeholder={savedClaudeKey === "configured" ? "Key is configured on server" : "Enter your Claude API key"}
+                  placeholder={savedClaudeKey ? "Key is configured on server" : "Enter your Claude API key"}
                   value={claudeKey}
                   onChange={(e) => setClaudeKey(e.target.value)}
                 />
@@ -772,38 +629,10 @@ export default function SettingsPage() {
                 <Save className="h-4 w-4 mr-1" /> Save
               </Button>
             </div>
-            {savedClaudeKey === "configured" && (
+            {savedClaudeKey && !claudeKey.trim() && (
               <p className="text-xs text-green-600 font-medium">Key is configured on server</p>
             )}
           </div>
-        </CardContent>
-      </Card>
-
-      {/* Claude Configuration */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Settings2 className="h-5 w-5" />
-            Claude Model Configuration
-          </CardTitle>
-          <CardDescription>Configure which Claude model to use, max tokens, and temperature. These override defaults.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <ClaudeConfigSection />
-        </CardContent>
-      </Card>
-
-      {/* Pricing */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Sliders className="h-5 w-5" />
-            Pricing Configuration
-          </CardTitle>
-          <CardDescription>Set the cost per image generation and per Claude API call. Used for credit calculations.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <PricingSection />
         </CardContent>
       </Card>
 
@@ -814,7 +643,7 @@ export default function SettingsPage() {
             <Image className="h-5 w-5" />
             Image-to-Image Model Selection
           </CardTitle>
-          <CardDescription>Choose which AI model to use for image-to-image generation. Configure API keys above for the selected provider.</CardDescription>
+          <CardDescription>Choose which AI model to use for image-to-image generation.</CardDescription>
         </CardHeader>
         <CardContent>
           <Img2imgSection />
@@ -828,7 +657,7 @@ export default function SettingsPage() {
             <DollarSign className="h-5 w-5" />
             Monthly Budget
           </CardTitle>
-          <CardDescription>Set your monthly spending limit in cents. Balance shown on the dashboard is budget minus actual usage.</CardDescription>
+          <CardDescription>Set your monthly spending limit. Balance shown on the dashboard is budget minus actual usage.</CardDescription>
         </CardHeader>
         <CardContent>
           <MonthlyBudgetSection />
@@ -842,7 +671,7 @@ export default function SettingsPage() {
             <FolderOpen className="h-5 w-5" />
             Storage Configuration
           </CardTitle>
-          <CardDescription>Set the root output directory for scraped products and images. Each product gets its own sub-folder.</CardDescription>
+          <CardDescription>Manage file output settings. Output directory is only configurable with Google Drive.</CardDescription>
         </CardHeader>
         <CardContent>
           <StorageSection />
@@ -856,7 +685,7 @@ export default function SettingsPage() {
             <Zap className="h-5 w-5" />
             Scrapfly Credits
           </CardTitle>
-          <CardDescription>Scraply API credit consumption for CAPTCHA bypass. 3 accounts pooled, ~6 credits per product (datacenter + JS render). Resets monthly.</CardDescription>
+          <CardDescription>Scrapfly API credit consumption for CAPTCHA bypass. ~6 credits per product (datacenter + JS render). Resets monthly.</CardDescription>
         </CardHeader>
         <CardContent>
           <ScrapflyUsageSection />
@@ -884,7 +713,7 @@ export default function SettingsPage() {
             <Cloud className="h-5 w-5" />
             Google Drive Sync
           </CardTitle>
-          <CardDescription>Configure Google Drive integration using a service account</CardDescription>
+          <CardDescription>Configure Google Drive integration using a service account. Directory name and output folder can be configured here.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <DriveCredentialsSection />

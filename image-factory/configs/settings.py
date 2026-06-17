@@ -57,9 +57,10 @@ class Settings(BaseSettings):
     claude_max_tokens: int = 4096
     claude_temperature: float = 0.7
 
-    # Gemini / Nano Banana defaults
-    gemini_api_key: str = ""
-    nano_banana_api_key: str = ""
+    # Google AI (shared key for Gemini + Nano Banana)
+    google_api_key: str = ""
+    gemini_api_key: str = ""  # kept for backward compat
+    nano_banana_api_key: str = ""  # kept for backward compat
     gemini_vision_model: str = "gemini-2.0-flash"
     gemini_text_model: str = "gemini-2.0-flash"
 
@@ -101,6 +102,7 @@ class Settings(BaseSettings):
     image_provider_poll_interval: int = 2
 
     # Storage (local only — no S3)
+    storage_enabled: bool = True
     storage_local_path: str = "./outputs"
 
     # Delivery (local only — no S3)

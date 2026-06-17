@@ -27,7 +27,6 @@ const navItems = [
 
 const bottomItems = [
   { href: "/settings", label: "Settings", icon: Settings },
-  { href: "/admin", label: "Admin", icon: Shield },
 ];
 
 export function Sidebar() {

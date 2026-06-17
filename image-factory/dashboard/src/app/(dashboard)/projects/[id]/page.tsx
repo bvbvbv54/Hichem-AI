@@ -1,6 +1,6 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { api } from "@/lib/api";
@@ -25,6 +25,15 @@ export default function ProjectDetailPage() {
   const { data: productsData } = useQuery({
     queryKey: ["project-products", projectId],
     queryFn: () => api.getProjectProducts(projectId, { limit: 200 }),
+  });
+
+  const queryClient = useQueryClient();
+
+  const retryMutation = useMutation({
+    mutationFn: (productId: string) => api.retryContentProduct(productId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["project-products", projectId] });
+    },
   });
 
   if (isLoading) return <ProjectSkeleton />;
@@ -188,7 +197,7 @@ export default function ProjectDetailPage() {
                     <p className="font-medium truncate">{product.url}</p>
                     <p className="text-sm text-muted-foreground">Processing failed</p>
                   </div>
-                  <Button variant="outline" size="sm">Retry</Button>
+                  <Button variant="outline" size="sm" onClick={() => retryMutation.mutate(product.id)} disabled={retryMutation.isPending}>Retry</Button>
                 </CardContent>
               </Card>
             ))}

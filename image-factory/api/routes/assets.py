@@ -1,21 +1,91 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from pathlib import Path
 
 from database.session import get_session
 from database.models.asset import Asset
-from sqlalchemy import select
+from database.models.product_link import ProductLink
+from database.models.job import Job
+from sqlalchemy import select, desc, func
 from configs.settings import settings
+from configs.logging import get_logger
+import hashlib
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/assets", tags=["Assets"])
 
 
 @router.get("")
-async def list_assets():
-    return {"items": [], "total": 0}
+async def list_assets(
+    project_id: str = Query(""),
+    status: str = Query(""),
+    search: str = Query(""),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    session: AsyncSession = Depends(get_session),
+):
+    query = select(Asset)
+    conditions = []
+    if project_id:
+        conditions.append(Asset.project_id == project_id)
+    if status:
+        conditions.append(Asset.status == status)
+    if search:
+        conditions.append(Asset.filename.ilike(f"%{search}%"))
+    if conditions:
+        from sqlalchemy import and_
+        query = query.where(and_(*conditions))
+    count_query = select(Asset.id).select_from(select(Asset).where(and_(*conditions) if conditions else True).subquery())
+    count_result = await session.execute(select(func.count()).select_from(count_query))
+    total = count_result.scalar() or 0
+    result = await session.execute(query.order_by(desc(Asset.created_at)).limit(limit).offset(offset))
+    assets = result.scalars().all()
+    return {"assets": [{"id": a.id, "job_id": a.job_id, "project_id": a.project_id, "filename": a.filename, "file_path": a.file_path, "file_size": a.file_size, "mime_type": a.mime_type, "width": a.width, "height": a.height, "alt_text": a.alt_text, "status": a.status, "meta": a.meta or {}, "created_at": a.created_at.isoformat() if a.created_at else "", "updated_at": a.updated_at.isoformat() if a.updated_at else ""} for a in assets], "total": total}
+
+
+async def _serve_file(file_path_str: str) -> FileResponse:
+    file_path = Path(file_path_str)
+    if not file_path.exists():
+        alt_path = Path(settings.storage_path) / file_path_str
+        if alt_path.exists():
+            file_path = alt_path
+        else:
+            raise HTTPException(status_code=404, detail="File not found on disk")
+    ext = file_path.suffix.lower()
+    mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}
+    return FileResponse(path=str(file_path), media_type=mime_map.get(ext, "image/png"))
+
+
+@router.get("/{asset_id}/file")
+async def get_asset_file(
+    asset_id: str,
+    session: AsyncSession = Depends(get_session),
+):
+    # Try Asset table first
+    result = await session.execute(select(Asset).where(Asset.id == asset_id))
+    asset = result.scalar_one_or_none()
+    if asset:
+        return await _serve_file(asset.file_path)
+
+    # Try scraped image from product detail (hashed path)
+    # asset_id is a hash - look through recent job metas for matching path
+    jobs_result = await session.execute(
+        select(Job).order_by(desc(Job.created_at)).limit(100)
+    )
+    jobs = jobs_result.scalars().all()
+    for job in jobs:
+        job_meta = job.meta or {}
+        saved = job_meta.get("saved_assets", [])
+        for img_path in saved:
+            img_id = hashlib.sha256(img_path.encode()).hexdigest()[:12]
+            if img_id == asset_id:
+                return await _serve_file(img_path)
+
+    raise HTTPException(status_code=404, detail="Asset not found")
 
 
 @router.get("/{asset_id}/download")

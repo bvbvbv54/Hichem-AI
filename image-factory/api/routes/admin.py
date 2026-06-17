@@ -16,9 +16,10 @@ from api.dependencies import get_redis
 from database.session import get_session
 from database.models.job import Job
 from database.models.notification import Notification
+from database.models.product_link import ProductLink
 from configs.logging import get_logger
 from configs.settings import settings
-from services.settings_service import get_provider_api_key, set_provider_api_key, get_provider_keys_status, get_setting, set_setting, get_claude_config, set_claude_config, get_pricing_config, set_pricing_config, get_img2img_config, set_img2img_config, get_storage_config, set_storage_config, get_all_settings
+from services.settings_service import get_provider_api_key, set_provider_api_key, get_provider_keys_status, get_setting, set_setting, get_claude_config, set_claude_config, get_img2img_config, set_img2img_config, get_storage_config, set_storage_config, set_storage_enabled, get_google_api_key, set_google_api_key, get_all_settings
 
 logger = get_logger(__name__)
 
@@ -163,10 +164,19 @@ async def retry_all_failed(
 
     from workers.celery_app import celery_app
 
+    from database.models.product_link import ProductLink
+
     retried = 0
     for job in failed_jobs:
         j_meta = job.meta or {}
         url = j_meta.get("url", "")
+        if not url:
+            pl_result = await session.execute(
+                select(ProductLink.url).where(ProductLink.job_id == job.id).limit(1)
+            )
+            row = pl_result.one_or_none()
+            if row:
+                url = row[0]
         if url:
             await session.execute(
                 update(Job).where(Job.id == job.id).values(
@@ -174,6 +184,14 @@ async def retry_all_failed(
                     error_message="",
                     retry_count=0,
                     progress=0.0,
+                    updated_at=datetime.utcnow(),
+                )
+            )
+            await session.execute(
+                update(ProductLink).where(ProductLink.job_id == job.id).values(
+                    status="pending",
+                    error_message="",
+                    failure_type="",
                     updated_at=datetime.utcnow(),
                 )
             )
@@ -276,29 +294,18 @@ async def list_provider_keys(session: AsyncSession = Depends(get_session)):
     return await get_provider_keys_status(session)
 
 
-@router.put("/provider-keys/nano-banana", summary="Update Nano Banana API key (persisted to DB)")
-async def update_nano_banana_key(
+@router.put("/provider-keys/google", summary="Update Google AI API key (shared for Gemini + Nano Banana, persisted to DB)")
+async def update_google_key(
     body: dict,
     session: AsyncSession = Depends(get_session),
 ):
     key = body.get("key", "")
     if not key:
         raise HTTPException(status_code=400, detail="key is required")
-    await set_provider_api_key("nano_banana_api_key", key.strip(), session)
-    from services.nano_banana.credit_balancer import get_credit_balancer
-    get_credit_balancer().invalidate_cache()
-    return {"status": "updated", "key": key[:8] + "..." + key[-4:] if len(key) > 12 else "***"}
-
-
-@router.put("/provider-keys/gemini", summary="Update Gemini API key (persisted to DB)")
-async def update_gemini_key(
-    body: dict,
-    session: AsyncSession = Depends(get_session),
-):
-    key = body.get("key", "")
-    if not key:
-        raise HTTPException(status_code=400, detail="key is required")
-    await set_provider_api_key("gemini_api_key", key.strip(), session)
+    # Basic validation: Google API keys start with "AIza"
+    if not key.strip().startswith("AIza"):
+        raise HTTPException(status_code=400, detail="Invalid Google API key format — must start with 'AIza'")
+    await set_google_api_key(key.strip(), session)
     from services.nano_banana.credit_balancer import get_credit_balancer
     get_credit_balancer().invalidate_cache()
     return {"status": "updated", "key": key[:8] + "..." + key[-4:] if len(key) > 12 else "***"}
@@ -371,26 +378,7 @@ async def update_claude_settings(
     return {"status": "updated", "claude_model": model, "claude_max_tokens": max_tokens, "claude_temperature": temperature}
 
 
-@router.get("/settings/pricing", summary="Get pricing configuration")
-async def get_pricing_settings(session: AsyncSession = Depends(get_session)):
-    return await get_pricing_config(session)
-
-
-@router.put("/settings/pricing", summary="Update pricing configuration")
-async def update_pricing_settings(
-    body: dict,
-    session: AsyncSession = Depends(get_session),
-):
-    cost_per_image = body.get("cost_per_image_cents", 1.0)
-    cost_per_claude = body.get("cost_per_claude_call_cents", 0.03)
-    if not isinstance(cost_per_image, (int, float)) or cost_per_image < 0:
-        raise HTTPException(status_code=400, detail="cost_per_image_cents must be a non-negative number")
-    if not isinstance(cost_per_claude, (int, float)) or cost_per_claude < 0:
-        raise HTTPException(status_code=400, detail="cost_per_claude_call_cents must be a non-negative number")
-    await set_pricing_config(float(cost_per_image), float(cost_per_claude), session)
-    from services.nano_banana.credit_balancer import get_credit_balancer
-    get_credit_balancer().invalidate_cache()
-    return {"status": "updated", "cost_per_image_cents": cost_per_image, "cost_per_claude_call_cents": cost_per_claude}
+# Pricing is now internal-only — configured via configs/pricing.py
 
 
 @router.get("/settings/img2img", summary="Get image-to-image model configuration")
@@ -428,88 +416,126 @@ async def update_storage_settings(
     return {"status": "updated", "storage_local_path": path.strip()}
 
 
-@router.get("/scrapfly/usage", summary="Get Scrapfly credit usage")
-async def get_scrapfly_usage(
-    redis: aioredis.Redis = Depends(get_redis),
+@router.put("/settings/storage/toggle", summary="Enable or disable storage")
+async def toggle_storage(
+    body: dict,
     session: AsyncSession = Depends(get_session),
 ):
-    usage = await redis.hgetall("scrapfly:usage")
-    remaining_project_key = await redis.get("scrapfly:remaining_project")
-    parsed = {}
-    total_cost = 0
-    total_requests = 0
-    for k, v in usage.items():
-        k = k.decode() if isinstance(k, bytes) else k
-        v = int(v.decode()) if isinstance(v, bytes) else int(v)
-        parsed[k] = v
-        if k == "total_cost":
-            total_cost = v
-        elif k.endswith(":cost"):
-            total_requests += 1
+    enabled = body.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise HTTPException(status_code=400, detail="enabled must be a boolean")
+    await set_storage_enabled(enabled, session)
+    return {"status": "updated", "storage_enabled": enabled}
 
-    # ScrapFly 'x-scrapfly-remaining-api-credit' is ACCOUNT-level, not per-key.
-    # All keys share the same account pool. We take the max tracked value as
-    # our best knowledge of account-level remaining.
-    account_remaining = 0
-    for k, v in parsed.items():
-        if k.endswith(":remaining"):
-            account_remaining = max(account_remaining, v)
-    # If no request has been made yet, we simply don't know the remaining
-    has_usage_data = total_requests > 0
 
-    remaining_project_val = int(remaining_project_key.decode()) if remaining_project_key else 0
+@router.get("/scrapfly/usage", summary="Get Scrapfly credit usage")
+async def get_scrapfly_usage(
+    session: AsyncSession = Depends(get_session),
+):
+    COST_PER_SCRAPE = 6
+    CREDITS_PER_KEY = 1000
+    import asyncio
+    import httpx
 
-    monthly_budget = settings.scrapfly_monthly_budget
+    from services.scrapfly_key_manager import get_all_keys
+    keys = await get_all_keys(session)
+    key_count = len(keys)
 
-    from services.scrapfly_key_manager import get_keys_with_usage
-    keys = await get_keys_with_usage(session, redis)
+    async def fetch_key_usage(key: str) -> dict:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(
+                    f"https://api.scrapfly.io/account?key={key}",
+                    headers={"Accept": "application/json"},
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    usage = data.get("subscription", {}).get("usage", {}).get("scrape", {})
+                    used = usage.get("current", 0)
+                    limit = usage.get("limit", CREDITS_PER_KEY)
+                    remaining = usage.get("remaining", max(0, limit - used))
+                    return {"ok": True, "used": used, "limit": limit, "remaining": remaining}
+                logger.warning("scrapfly_account_api_failed", key=key[:20], status=resp.status_code)
+        except Exception as e:
+            logger.warning("scrapfly_account_api_error", key=key[:20], error=str(e))
+        return {"ok": False, "used": 0, "limit": CREDITS_PER_KEY, "remaining": CREDITS_PER_KEY}
 
-    # Primary: account-level remaining (from response headers). Fallback: project-level.
-    remaining = account_remaining or remaining_project_val or 0
+    results = await asyncio.gather(*[fetch_key_usage(k) for k in keys])
+    total_used = sum(r["used"] for r in results)
+    total_credits = key_count * CREDITS_PER_KEY
+    remaining = max(0, total_credits - total_used)
+    scrapes_possible = remaining // COST_PER_SCRAPE if COST_PER_SCRAPE > 0 else 0
 
-    avg_cost_per_request = round(total_cost / total_requests, 1) if total_requests > 0 else 9
-    # ScrapFly billing: 9 pts base for CAPTCHA-bypass (asp=true)
-    cost_per_product = max(avg_cost_per_request, 9)
-
-    scrapes_remaining_budget = max(0, (monthly_budget - total_cost) // cost_per_product) if cost_per_product > 0 else 0
-    scrapes_remaining_actual = max(0, remaining // cost_per_product) if cost_per_product > 0 else 0
+    per_key_remaining = []
+    per_key_summary = []
+    for key, result in zip(keys, results):
+        short = key[:20]
+        per_key_remaining.append({
+            "key_preview": short + "...",
+            "full_key": key,
+            "used": result["used"],
+            "remaining": result["remaining"],
+            "status": "tracked" if result["ok"] else "unreachable",
+        })
+        per_key_summary.append({
+            "key": short + "...",
+            "used": result["used"],
+            "remaining": result["remaining"],
+            "status": "tracked" if result["ok"] else "unreachable",
+        })
 
     return {
-        "total_cost": total_cost,
-        "total_requests": total_requests,
-        "avg_cost_per_request": avg_cost_per_request,
-        "cost_per_product": cost_per_product,
+        "total_cost": total_used,
+        "total_requests": total_used,
+        "avg_cost_per_request": round(total_used / key_count, 1) if key_count > 0 else 0,
+        "cost_per_product": COST_PER_SCRAPE,
         "remaining_credits": remaining,
-        "has_usage_data": has_usage_data,
-        "monthly_budget": monthly_budget,
-        "budget_left": max(0, monthly_budget - total_cost),
-        "scrapes_remaining_budget": scrapes_remaining_budget,
-        "scrapes_remaining_actual": scrapes_remaining_actual,
-        "per_key_summary": [
-            {
-                "key": k["key_preview"],
-                "used": k["used"],
-                "remaining": k["remaining"] if k["remaining"] > 0 else None,
-                "status": "tracked" if k["remaining"] > 0 else "untracked",
-            }
-            for k in keys
-        ],
-        "products_possible": max(0, (monthly_budget - total_cost) // cost_per_product) if cost_per_product > 0 else 0,
-        "per_key": {k: v for k, v in parsed.items() if k != "total_cost"},
-        "keys": keys,
-        "key_count": len(keys),
+        "has_usage_data": total_used > 0,
+        "monthly_budget": total_credits,
+        "budget_left": remaining,
+        "scrapes_remaining_budget": scrapes_possible,
+        "scrapes_remaining_actual": scrapes_possible,
+        "per_key_summary": per_key_summary,
+        "products_possible": scrapes_possible,
+        "per_key": {},
+        "keys": per_key_remaining,
+        "key_count": key_count,
+        "total_credits": total_credits,
+        "successful_scrapes": total_used,
+        "cost_per_scrape": COST_PER_SCRAPE,
     }
 
 
 @router.get("/scrapfly/keys", summary="List all Scrapfly API keys")
 async def list_scrapfly_keys(
-    redis: aioredis.Redis = Depends(get_redis),
     session: AsyncSession = Depends(get_session),
 ):
-    from services.scrapfly_key_manager import get_keys_with_usage
+    import asyncio
+    import httpx
 
-    keys = await get_keys_with_usage(session, redis)
-    return {"keys": keys, "total": len(keys)}
+    from services.scrapfly_key_manager import get_all_keys
+    keys = await get_all_keys(session)
+
+    async def fetch_key_info(key: str) -> dict:
+        short = key[:20]
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(
+                    f"https://api.scrapfly.io/account?key={key}",
+                    headers={"Accept": "application/json"},
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    usage = data.get("subscription", {}).get("usage", {}).get("scrape", {})
+                    used = usage.get("current", 0)
+                    remaining = usage.get("remaining", 0)
+                    return {"key_preview": short + "...", "full_key": key, "used": used, "remaining": remaining, "status": "active"}
+        except Exception as e:
+            logger.warning("scrapfly_key_info_error", key=short, error=str(e))
+        return {"key_preview": short + "...", "full_key": key, "used": 0, "remaining": None, "status": "unreachable"}
+
+    results = await asyncio.gather(*[fetch_key_info(k) for k in keys])
+    return {"keys": results, "total": len(results)}
 
 
 @router.post("/scrapfly/keys", summary="Add a Scrapfly API key")

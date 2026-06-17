@@ -66,8 +66,8 @@ export default function ContentPage() {
       {/* Stats */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <StatBadge label="Total" value={stats?.total ?? 0} color="bg-primary/10 text-primary" />
-        <StatBadge label="Pending" value={stats?.pending ?? 0} color="bg-yellow-100 text-yellow-700 dark:bg-yellow-900 dark:text-yellow-300" />
-        <StatBadge label="Completed" value={stats?.completed ?? 0} color="bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300" />
+        <StatBadge label="Scraped" value={stats?.scraped ?? 0} color="bg-indigo-100 text-indigo-700 dark:bg-indigo-900 dark:text-indigo-300" />
+        <StatBadge label="Completed (AI)" value={stats?.completed ?? 0} color="bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300" />
         <StatBadge label="Failed" value={stats?.failed ?? 0} color="bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300" />
       </div>
 

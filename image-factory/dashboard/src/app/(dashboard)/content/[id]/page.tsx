@@ -1,6 +1,6 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "next/navigation";
 import { api } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -84,6 +84,14 @@ export default function ProductDetailPage() {
 
   const { product, scraped_images, generated_images, jobs } = data;
 
+  const queryClient = useQueryClient();
+  const retryMutation = useMutation({
+    mutationFn: (pid: string) => api.retryContentProduct(pid),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["content-product", product.id] });
+    },
+  });
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -105,9 +113,16 @@ export default function ProductDetailPage() {
             </a>
           </div>
         </div>
-        <Badge variant="outline" className={statusColors[product.status] || ""}>
-          {product.status}
-        </Badge>
+        <div className="flex items-center gap-2">
+          <Badge variant="outline" className={statusColors[product.status] || ""}>
+            {product.status}
+          </Badge>
+          {(product.status === "failed" || product.status === "error") && (
+            <Button variant="outline" size="sm" onClick={() => retryMutation.mutate(product.id)} disabled={retryMutation.isPending}>
+              <RefreshCw className="h-3 w-3 mr-1" /> Retry
+            </Button>
+          )}
+        </div>
       </div>
 
       {/* Summary stats */}
@@ -146,7 +161,7 @@ export default function ProductDetailPage() {
               {scraped_images.map((img: any) => (
                 <ImageThumb
                   key={img.id}
-                  src={`/api/v1/assets/${img.id}/download`}
+                  src={`/api/v1/assets/${img.id}/file`}
                   label={img.filename}
                 />
               ))}

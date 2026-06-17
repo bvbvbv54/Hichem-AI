@@ -70,11 +70,10 @@ class NanoBananaCreditBalancer:
     async def validate_api_key(self, session: Optional[AsyncSession] = None) -> dict:
         api_key = ""
         if session:
-            api_key = await get_provider_api_key("nano_banana_api_key", session)
+            from services.settings_service import get_google_api_key
+            api_key, _ = await get_google_api_key(session)
         if not api_key:
-            api_key = await get_provider_api_key("gemini_api_key", session) if session else ""
-        if not api_key:
-            return {"valid": False, "error": "No API key configured. Set one in Settings.", "models": []}
+            return {"valid": False, "error": "No Google API key configured. Set one in Settings.", "models": []}
 
         try:
             async with httpx.AsyncClient(timeout=10) as client:
