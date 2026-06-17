@@ -1,0 +1,28 @@
+{
+  "domain": "taobao.com",
+  "name": "Taobao",
+  "selectors": {
+    "title": ".tb-main-title, .title, h1[data-spm]",
+    "price": ".tb-rmb-num, .price, .tm-price",
+    "description": ".tb-detail-desc, .desc-wrap",
+    "images": "#J_ImgBooth img, .tb-thumb img, .item-photo img"
+  },
+  "json_paths": {
+    "title": "itemInfoModel.title, api.item.title",
+    "price": "itemInfoModel.price, api.item.price",
+    "images": "itemInfoModel.images, api.item.images"
+  },
+  "captcha_signatures": ["umid", "h5_nc", "nocaptcha"],
+  "session_rules": {
+    "max_requests_per_session": 30,
+    "session_ttl_hours": 12,
+    "cooldown_minutes": 60
+  },
+  "request_rules": {
+    "max_concurrent": 2,
+    "delay_min": 5.0,
+    "delay_max": 10.0,
+    "backoff_strategy": "exponential"
+  },
+  "preferred_extraction_method": "embedded_json"
+}

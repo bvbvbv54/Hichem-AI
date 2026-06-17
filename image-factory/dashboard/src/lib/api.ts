@@ -259,4 +259,26 @@ export const api = {
       method: "POST",
       body: JSON.stringify(data),
     }),
+
+  // Provider Keys
+  getProviderKeys: () => request<any>("/admin/provider-keys"),
+
+  // Image-to-Image Model Settings
+  getImg2imgSettings: () => request<any>("/admin/settings/img2img"),
+  updateImg2imgSettings: (model: string) =>
+    request<any>("/admin/settings/img2img", { method: "PUT", body: JSON.stringify({ img2img_model: model }) }),
+
+  // Storage / Output Directory Settings
+  getStorageSettings: () => request<any>("/admin/settings/storage"),
+  updateStorageSettings: (storagePath: string) =>
+    request<any>("/admin/settings/storage", { method: "PUT", body: JSON.stringify({ storage_local_path: storagePath }) }),
+
+  // Scrapfly Usage
+  getScrapflyUsage: () => request<any>("/admin/scrapfly/usage"),
+
+  // Intelligence / CAPTCHA
+  getCaptchaIntelligence: () => request<any>("/dashboard/captcha"),
+
+  // AI Limiter (budget consumption)
+  getAiLimiter: () => request<any>("/dashboard/ai-limiter"),
 };

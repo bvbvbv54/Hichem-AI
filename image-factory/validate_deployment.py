@@ -305,20 +305,8 @@ def check_ssl_certificates() -> Tuple[bool, List[str]]:
 
 
 def check_storage_config() -> Tuple[bool, List[str]]:
-    """Verify storage backend configuration."""
+    """Verify storage configuration."""
     issues = []
-    with open(".env") as f:
-        for line in f:
-            if line.startswith("STORAGE_BACKEND="):
-                backend = line.split("=", 1)[1].strip()
-                if backend == "s3":
-                    s3_keys = ["STORAGE_S3_BUCKET", "STORAGE_S3_ACCESS_KEY", "STORAGE_S3_SECRET_KEY"]
-                    with open(".env") as f2:
-                        env_content = f2.read()
-                    for key in s3_keys:
-                        if f"{key}=change-me" in env_content or f"{key}=" not in env_content:
-                            issues.append(f"ERROR: S3 storage requires {key} to be configured")
-                break
     return len(issues) == 0, issues
 
 

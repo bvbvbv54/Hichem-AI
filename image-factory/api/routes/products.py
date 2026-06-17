@@ -25,6 +25,7 @@ from configs.settings import settings
 from configs.logging import get_logger
 from services.nano_banana.credit_balancer import get_credit_balancer
 import redis.asyncio as aioredis
+from services.notifications import send_notification, NotificationLevel
 
 logger = get_logger(__name__)
 
@@ -112,7 +113,18 @@ async def upload_products(
     })
 
     product_list = []
+    skipped_previously_completed = 0
     for product in parse_result.products:
+        url = product.product_url
+        if url:
+            url_hash = hashlib.sha256(url.encode()).hexdigest()
+            existing = await session.execute(
+                select(ProductLink).where(ProductLink.url_hash == url_hash)
+            )
+            existing_link = existing.scalar_one_or_none()
+            if existing_link and existing_link.status in ("completed", "generating"):
+                skipped_previously_completed += 1
+                continue
         child_data = {
             "type": "single",
             "status": JobStatus.QUEUED.value,
@@ -162,12 +174,50 @@ async def upload_products(
 
     logger.info("batch_created", batch_id=batch_id, products=parse_result.valid_rows, warnings=len(parse_result.warnings), task_dispatched=dispatched)
 
+    actual_new = len(product_list)
+
+    # Check if any AI API keys are configured
+    from services.settings_service import get_provider_keys_status
+    key_status = await get_provider_keys_status(session)
+    has_any_key = any(v["configured"] for v in key_status.values())
+    if not has_any_key:
+        await send_notification(
+            user_id="",
+            title="No API keys configured",
+            message="No AI provider API keys are configured. Products will be scraped (images and names) but AI image generation requires at least one API key. Configure keys in Settings > AI Provider Keys.",
+            event_type="no_api_keys",
+            level=NotificationLevel.WARNING,
+            data={"batch_id": batch_id, "total_products": actual_new},
+        )
+
+    response_message = f"Parsed {actual_new} new products from file"
+    if skipped_previously_completed > 0:
+        response_message += f" ({skipped_previously_completed} already processed — skipped)"
+        await send_notification(
+            user_id="",
+            title="Duplicate products skipped",
+            message=f"{skipped_previously_completed} product(s) were already processed in a previous batch and have been skipped.",
+            event_type="duplicate_skipped",
+            level=NotificationLevel.WARNING,
+            data={"skipped_count": skipped_previously_completed, "batch_id": batch_id},
+        )
+
+    if not actual_new:
+        return {
+            "batch_id": batch_id,
+            "job_id": batch_id,
+            "status": "no_new_products",
+            "message": "All products in this file were already processed. No new jobs created.",
+            "total_products": 0,
+            "skipped_previously_completed": skipped_previously_completed,
+        }
+
     return {
         "batch_id": batch_id,
         "job_id": batch_id,
         "status": "parsed",
-        "message": f"Parsed {parse_result.valid_rows} products from file",
-        "total_products": parse_result.valid_rows,
+        "message": response_message,
+        "total_products": actual_new,
         "total_images_scraped": 0,
         "scraped_images": [
             {
@@ -179,10 +229,12 @@ async def upload_products(
         ],
         "parse_result": {
             "total_rows": parse_result.total_rows,
-            "valid_rows": parse_result.valid_rows,
+            "valid_rows": actual_new,
             "skipped_rows": parse_result.skipped_rows,
-            "duplicate_rows": parse_result.duplicate_rows,
+            "duplicate_rows": parse_result.duplicate_rows + skipped_previously_completed,
+            "previously_completed_skipped": skipped_previously_completed,
             "warnings": parse_result.warnings,
+            "new_products": actual_new,
         },
         "estimated_duration_minutes": estimated_duration_minutes,
     }
@@ -206,12 +258,28 @@ async def check_credits_before_generation(
 
     balancer = get_credit_balancer()
     credit_status = await balancer.check_sufficient_credits(
+        session=session,
         product_count=product_count,
         images_per_product=req.num_images_per_product,
         use_claude=req.use_claude,
     )
 
     require_confirmation = not credit_status.sufficient or credit_status.available_credits_cents < 100.0
+
+    if not credit_status.sufficient:
+        await send_notification(
+            user_id="",
+            title="Insufficient credits",
+            message=credit_status.warning_message,
+            event_type="quota_exceeded",
+            level=NotificationLevel.ERROR,
+            data={
+                "batch_id": req.batch_id,
+                "estimated_cost_cents": credit_status.estimated_cost_cents,
+                "available_credits_cents": credit_status.available_credits_cents,
+                "deficit_cents": credit_status.deficit_cents,
+            },
+        )
 
     return CreditCheckResponse(
         sufficient=credit_status.sufficient,

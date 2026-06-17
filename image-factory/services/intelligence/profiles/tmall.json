@@ -1,0 +1,28 @@
+{
+  "domain": "tmall.com",
+  "name": "Tmall",
+  "selectors": {
+    "title": ".tb-main-title, .title, h1",
+    "price": ".tm-price, .price",
+    "description": ".detail-desc, .desc-wrap",
+    "images": "#J_ImgBooth img, .tm-gallery img"
+  },
+  "json_paths": {
+    "title": "itemModel.title, api.item.title",
+    "price": "itemModel.price, api.item.price",
+    "images": "itemModel.images, api.item.images"
+  },
+  "captcha_signatures": ["h5_nc", "nocaptcha"],
+  "session_rules": {
+    "max_requests_per_session": 30,
+    "session_ttl_hours": 12,
+    "cooldown_minutes": 60
+  },
+  "request_rules": {
+    "max_concurrent": 2,
+    "delay_min": 5.0,
+    "delay_max": 10.0,
+    "backoff_strategy": "exponential"
+  },
+  "preferred_extraction_method": "embedded_json"
+}

@@ -55,8 +55,6 @@ def test_settings():
     """Reset to test settings for every test."""
     settings.app_env = "test"
     settings.api_key = "test-api-key"
-    settings.gemini_api_key = "test-gemini-key"
-    settings.storage_backend = "local"
     settings.storage_local_path = "./test-outputs"
     settings.delivery_backends = "local"
     settings.delivery_local_path = "./test-outputs"

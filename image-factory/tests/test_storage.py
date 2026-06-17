@@ -54,9 +54,7 @@ async def test_local_delivery():
 @pytest.mark.asyncio
 async def test_storage_backend_selection():
     from services.storage.local import get_storage_backend
-    from configs.settings import settings
 
-    settings.storage_backend = "local"
     backend = get_storage_backend()
     from services.storage.local import LocalStorage
     assert isinstance(backend, LocalStorage)

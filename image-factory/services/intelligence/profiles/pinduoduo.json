@@ -1,0 +1,28 @@
+{
+  "domain": "pinduoduo.com",
+  "name": "Pinduoduo",
+  "selectors": {
+    "title": ".goods-title, .product-title, h1",
+    "price": ".goods-price, .price",
+    "description": ".goods-desc, .product-desc",
+    "images": ".goods-gallery img, .swiper-slide img"
+  },
+  "json_paths": {
+    "title": "goodsInfo.title, product.name",
+    "price": "goodsInfo.price, product.price",
+    "images": "goodsInfo.gallery, product.images"
+  },
+  "captcha_signatures": ["pinduoduo-captcha"],
+  "session_rules": {
+    "max_requests_per_session": 20,
+    "session_ttl_hours": 6,
+    "cooldown_minutes": 120
+  },
+  "request_rules": {
+    "max_concurrent": 1,
+    "delay_min": 8.0,
+    "delay_max": 15.0,
+    "backoff_strategy": "exponential"
+  },
+  "preferred_extraction_method": "static_html"
+}

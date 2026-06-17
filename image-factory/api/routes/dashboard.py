@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 from fastapi import APIRouter, Depends
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
+import redis.asyncio as aioredis
 
+from api.dependencies import get_redis
 from database.session import get_session
 from database.models.job import Job
 from database.models.asset import Asset
 from database.models.product_link import ProductLink
 from configs.logging import get_logger
+from configs.settings import settings
 from services.nano_banana.credit_balancer import get_credit_balancer
 
 logger = get_logger(__name__)
@@ -41,7 +46,7 @@ async def get_dashboard_stats(session: AsyncSession = Depends(get_session)):
 
     try:
         balancer = get_credit_balancer()
-        balance = await balancer.check_balance()
+        balance = await balancer.check_balance(session)
         cost_per_image = balancer.COST_PER_IMAGE_CENTS
         total_cost_cents = total_images * cost_per_image
     except Exception as e:
@@ -181,4 +186,91 @@ async def get_queue_info(session: AsyncSession = Depends(get_session)):
         "estimated_completion_minutes": total * 2,
         "estimated_wait_minutes": waiting_count * 2,
         "workers_active": 4,
+    }
+
+
+@router.get("/ai-limiter")
+async def get_ai_limiter(session: AsyncSession = Depends(get_session)):
+    from services.nano_banana.credit_balancer import get_credit_balancer
+    from services.settings_service import get_setting
+    balancer = get_credit_balancer()
+    budget_cents = float(settings.monthly_budget_cents)
+    db_budget = await get_setting("monthly_budget_cents", session, "")
+    if db_budget:
+        budget_cents = float(db_budget)
+    usage_cents = await balancer.get_total_usage_cents(session)
+    remaining_cents = max(0, budget_cents - usage_cents)
+    pct = round((usage_cents / budget_cents) * 100, 1) if budget_cents > 0 else 0
+    total_assets = await session.execute(select(func.count(Asset.id)))
+    return {
+        "monthly_budget_dollars": round(budget_cents / 100, 2),
+        "usage_dollars": round(usage_cents / 100, 2),
+        "remaining_dollars": round(remaining_cents / 100, 2),
+        "usage_percent": pct,
+        "total_images_this_month": total_assets.scalar() or 0,
+        "cost_per_image_dollars": balancer.COST_PER_IMAGE_CENTS / 100,
+        "low_credits": remaining_cents < balancer.LOW_CREDIT_THRESHOLD_CENTS,
+        "critical_credits": remaining_cents < balancer.CRITICAL_CREDIT_THRESHOLD_CENTS,
+    }
+
+
+@router.get("/captcha")
+async def get_captcha_intelligence(redis: aioredis.Redis = Depends(get_redis)):
+    captcha_stats_prefix = "intel:captcha_stats:"
+    now = datetime.utcnow()
+    date_str = now.strftime("%Y-%m-%d")
+    top: list[dict] = []
+    total_today = 0
+
+    # Scan keys matching the pattern
+    cursor = 0
+    domains_seen: set[str] = set()
+    while True:
+        cursor, keys = await redis.scan(cursor, match=f"{captcha_stats_prefix}*:*", count=500)
+        for key in keys:
+            k = key.decode() if isinstance(key, bytes) else key
+            parts = k.split(":")
+            if len(parts) >= 4:
+                domain = parts[3]
+                day = parts[4] if len(parts) >= 5 else ""
+                domains_seen.add(domain)
+        if cursor == 0:
+            break
+
+    for domain in sorted(domains_seen):
+        # Get today's count
+        today_key = f"{captcha_stats_prefix}{domain}:{date_str}"
+        today_stats = await redis.hgetall(today_key)
+        today_total = 0
+        if today_stats:
+            for k, v in today_stats.items():
+                key = k.decode() if isinstance(k, bytes) else k
+                val = int(v.decode() if isinstance(v, bytes) else v)
+                if key == "total":
+                    today_total = val
+        total_today += today_total
+
+        # Get 7-day count
+        week_total = 0
+        for i in range(7):
+            d = (now - timedelta(days=i)).strftime("%Y-%m-%d")
+            wk_key = f"{captcha_stats_prefix}{domain}:{d}"
+            wk_stats = await redis.hgetall(wk_key)
+            if wk_stats:
+                for k, v in wk_stats.items():
+                    key = k.decode() if isinstance(k, bytes) else k
+                    val = int(v.decode() if isinstance(v, bytes) else v)
+                    if key == "total":
+                        week_total += val
+
+        if week_total > 0:
+            top.append({"domain": domain, "captcha_count": week_total})
+
+    top.sort(key=lambda x: x["captcha_count"], reverse=True)
+    top = top[:10]
+
+    return {
+        "top_blocking_marketplaces": top,
+        "daily_report": {entry["domain"]: {"total_captchas": entry["captcha_count"]} for entry in top},
+        "total_captchas_today": total_today,
     }

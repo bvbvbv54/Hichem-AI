@@ -15,10 +15,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 
 import { toast } from "@/hooks/use-toast";
-import { Upload, FileSpreadsheet, CheckCircle2, Loader2, AlertTriangle, Settings2, Image, Sparkles, ToggleLeft } from "lucide-react";
+import { Upload, FileSpreadsheet, CheckCircle2, Loader2, AlertTriangle, Settings2, Image, Sparkles, ToggleLeft, ExternalLink } from "lucide-react";
 import { formatFileSize } from "@/lib/utils";
 
-type UploadState = "idle" | "uploading" | "parsed" | "configuring" | "generating" | "done";
+type UploadState = "idle" | "uploading" | "parsed" | "configuring" | "generating" | "done" | "scraped_only";
 
 export default function UploadPage() {
   const [file, setFile] = useState<File | null>(null);
@@ -37,6 +37,13 @@ export default function UploadPage() {
     queryKey: ["projects"],
     queryFn: () => api.listProjects({ limit: 100 }),
   });
+
+  const { data: providerKeys } = useQuery({
+    queryKey: ["provider-keys"],
+    queryFn: () => api.getProviderKeys(),
+  });
+
+  const hasAnyApiKey = providerKeys && Object.values(providerKeys).some((v: any) => v?.configured);
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
     const f = acceptedFiles[0];
@@ -66,12 +73,21 @@ export default function UploadPage() {
       const result = await api.uploadFile(file, projectId);
       setUploadResult(result);
       if (result.status === "parsed") {
-        setState("parsed");
-        const total = autoImages
-          ? (result.scraped_images || []).reduce((s: number, p: any) => s + (p.count || 1), 0)
-          : (result.total_products || 0) * numImages;
-        setTotalOutput(total);
-        toast({ title: "File parsed", description: result.message, variant: "success" });
+        if (!hasAnyApiKey) {
+          setState("scraped_only");
+          toast({
+            title: "Products scraped successfully",
+            description: `Parsed ${result.total_products} products. No API keys configured — products will be scraped only. Configure keys in Settings to enable AI generation.`,
+            variant: "default",
+          });
+        } else {
+          setState("parsed");
+          const total = autoImages
+            ? (result.scraped_images || []).reduce((s: number, p: any) => s + (p.count || 1), 0)
+            : (result.total_products || 0) * numImages;
+          setTotalOutput(total);
+          toast({ title: "File parsed", description: result.message, variant: "success" });
+        }
       }
     } catch (err: any) {
       setState("idle");
@@ -336,6 +352,55 @@ export default function UploadPage() {
             <Image className="h-4 w-4 mr-2" />
             Generate {totalOutput} Images
           </Button>
+        </>
+      )}
+
+      {/* Scraped-only state (no API keys) */}
+      {state === "scraped_only" && uploadResult && (
+        <>
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg flex items-center gap-2">
+                <CheckCircle2 className="h-5 w-5 text-success" />
+                Products Scraped — {uploadResult.total_products} products discovered
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="rounded-lg border p-3 text-center">
+                  <p className="text-2xl font-bold">{uploadResult.total_products}</p>
+                  <p className="text-xs text-muted-foreground">Products</p>
+                </div>
+                <div className="rounded-lg border p-3 text-center">
+                  <p className="text-2xl font-bold">{uploadResult.total_products}</p>
+                  <p className="text-xs text-muted-foreground">Images Scraping</p>
+                </div>
+              </div>
+
+              <div className="rounded-lg bg-amber-50 border border-amber-200 p-4">
+                <div className="flex items-start gap-3">
+                  <AlertTriangle className="h-5 w-5 text-amber-600 mt-0.5 shrink-0" />
+                  <div className="space-y-1">
+                    <p className="font-medium text-amber-800">No AI API Keys Configured</p>
+                    <p className="text-sm text-amber-700">
+                      Products will be scraped (images and names extracted from URLs), but AI image generation
+                      requires at least one AI provider API key. Navigate to <strong>Settings &gt; AI Provider Keys</strong> to configure keys, then come back to generate images.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex gap-3">
+                <Button variant="outline" className="flex-1" onClick={() => { setState("idle"); setFile(null); setUploadResult(null); }}>
+                  Upload Another File
+                </Button>
+                <Button variant="default" className="flex-1" onClick={() => window.location.href = "/products"}>
+                  <ExternalLink className="h-4 w-4 mr-2" />
+                  View Scraped Products
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
         </>
       )}
 

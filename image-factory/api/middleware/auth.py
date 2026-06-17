@@ -25,7 +25,7 @@ class AuthMiddleware:
             return await self.app(scope, receive, send)
 
         public_paths = ("/docs", "/redoc", "/openapi.json", "/api/v1/health", "/api/v1/health/ready")
-        public_prefixes = ("/api/v1/auth", "/api/v1/events", "/api/v1/verification", "/api/v1/dashboard", "/api/v1/assets", "/api/v1/consumption")
+        public_prefixes = ("/api/v1/auth", "/api/v1/events", "/api/v1/verification", "/api/v1/dashboard", "/api/v1/assets", "/api/v1/consumption", "/api/v1/credits")
         if request.url.path in public_paths or any(request.url.path.startswith(p) for p in public_prefixes):
             return await self.app(scope, receive, send)
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -118,52 +118,78 @@ async def get_product_detail(
     generated_images = []
     jobs_list = []
 
+    # Get all jobs for this product URL
+    jobs_result = await session.execute(
+        select(Job).where(
+            Job.meta["url"].as_string() == link.url
+        ).order_by(desc(Job.created_at))
+    )
+    all_jobs = list(jobs_result.scalars().all())
+
+    # Also get by direct job_id link
+    direct_jobs = []
     if link.job_id:
-        jobs_result = await session.execute(
-            select(Job).where(
-                and_(
-                    Job.meta.contains({"url": link.url}).as_comparison(1, 2),
-                    Job.status == "completed"
-                )
-            )
-            .order_by(desc(Job.created_at))
+        direct = await session.execute(select(Job).where(Job.id == link.job_id))
+        dj = direct.scalar_one_or_none()
+        if dj:
+            direct_jobs = [dj]
+
+    merged_jobs = {j.id: j for j in all_jobs + direct_jobs}
+    jobs = list(merged_jobs.values())
+    jobs.sort(key=lambda j: j.created_at or datetime.min, reverse=True)
+
+    for job in jobs:
+        assets_result = await session.execute(
+            select(Asset).where(Asset.job_id == job.id).order_by(Asset.created_at)
         )
-        jobs = list(jobs_result.scalars().all())
+        assets = list(assets_result.scalars().all())
 
-        for job in jobs:
-            assets_result = await session.execute(
-                select(Asset).where(Asset.job_id == job.id).order_by(Asset.created_at)
-            )
-            assets = list(assets_result.scalars().all())
+        for asset in assets:
+            img_info = {
+                "id": asset.id,
+                "job_id": asset.job_id,
+                "filename": asset.filename,
+                "file_path": asset.file_path,
+                "file_size": asset.file_size,
+                "mime_type": asset.mime_type,
+                "width": asset.width,
+                "height": asset.height,
+                "alt_text": asset.alt_text,
+                "created_at": asset.created_at.isoformat() if asset.created_at else None,
+            }
+            meta = asset.meta or {}
+            if meta.get("type") == "scraped" or "scraped" in (asset.filename or ""):
+                scraped_images.append(img_info)
+            else:
+                generated_images.append(img_info)
 
-            for asset in assets:
-                img_info = {
-                    "id": asset.id,
-                    "job_id": asset.job_id,
-                    "filename": asset.filename,
-                    "file_path": asset.file_path,
-                    "file_size": asset.file_size,
-                    "mime_type": asset.mime_type,
-                    "width": asset.width,
-                    "height": asset.height,
-                    "alt_text": asset.alt_text,
-                    "created_at": asset.created_at.isoformat() if asset.created_at else None,
-                }
-                meta = asset.meta or {}
-                if meta.get("type") == "scraped" or "scraped" in asset.filename:
-                    scraped_images.append(img_info)
-                else:
-                    generated_images.append(img_info)
-
-            jobs_list.append({
-                "id": job.id,
-                "status": job.status,
-                "type": job.type,
-                "created_at": job.created_at.isoformat() if job.created_at else None,
-                "completed_at": job.completed_at.isoformat() if job.completed_at else None,
-                "progress": job.progress,
-                "error_message": job.error_message or "",
+        # Also get scraped image paths from job meta
+        job_meta = job.meta or {}
+        saved = job_meta.get("saved_assets", [])
+        for img_path in saved:
+            img_id = hashlib.sha256(img_path.encode()).hexdigest()[:12]
+            scraped_images.append({
+                "id": img_id,
+                "job_id": job.id,
+                "filename": Path(img_path).name,
+                "file_path": img_path,
+                "file_size": 0,
+                "mime_type": "image/jpeg",
+                "width": None,
+                "height": None,
+                "alt_text": "",
+                "created_at": job.completed_at.isoformat() if job.completed_at else "",
             })
+
+        jobs_list.append({
+            "id": job.id,
+            "status": job.status,
+            "type": job.type,
+            "created_at": job.created_at.isoformat() if job.created_at else None,
+            "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+            "progress": job.progress,
+            "error_message": job.error_message or "",
+        })
 
     return ProductDetailResponse(
         product=ProductLinkSchema.model_validate(link),

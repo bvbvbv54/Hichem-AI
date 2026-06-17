@@ -1,0 +1,28 @@
+{
+  "domain": "aliexpress.com",
+  "name": "AliExpress",
+  "selectors": {
+    "title": "h1[class*='title'], .product-title-text",
+    "price": ".product-price-value, .price",
+    "description": ".product-description, .detail-description",
+    "images": ".image-viewer img, .gallery-item img"
+  },
+  "json_paths": {
+    "title": "data.title, pageData.title",
+    "price": "data.price, pageData.price",
+    "images": "data.images, pageData.imageList"
+  },
+  "captcha_signatures": ["recaptcha", "hcaptcha", "ali.captcha"],
+  "session_rules": {
+    "max_requests_per_session": 50,
+    "session_ttl_hours": 24,
+    "cooldown_minutes": 20
+  },
+  "request_rules": {
+    "max_concurrent": 3,
+    "delay_min": 3.0,
+    "delay_max": 6.0,
+    "backoff_strategy": "exponential"
+  },
+  "preferred_extraction_method": "embedded_json"
+}

@@ -40,8 +40,10 @@ async def publish(event: PipelineEvent) -> None:
         "timestamp": event.timestamp.isoformat(),
         **event.data,
     }
-    await r.publish(CHANNEL, json.dumps(payload))
-    await r.aclose()
+    try:
+        await r.publish(CHANNEL, json.dumps(payload))
+    finally:
+        await r.aclose()
 
 
 async def subscribe() -> AsyncIterator[PipelineEvent]:

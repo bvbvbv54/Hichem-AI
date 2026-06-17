@@ -247,9 +247,17 @@ class ExcelReader:
             wb.close()
             if not rows:
                 return ExcelParseResult()
-            headers = [str(h).strip() if h else f"column_{i}" for i, h in enumerate(rows[0])]
+
+            first_row = rows[0]
+            if first_row and any(cell is not None for cell in first_row):
+                headers = [str(h).strip() if h else f"column_{i}" for i, h in enumerate(first_row)]
+            else:
+                max_cols = max((len(r) for r in rows), default=0)
+                headers = [f"column_{i}" for i in range(max_cols)]
+
             raw_rows: list[dict[str, Any]] = []
-            for row in rows[1:]:
+            start_idx = 0 if not first_row or not any(cell is not None for cell in first_row) else 1
+            for row in rows[start_idx:]:
                 if not any(cell is not None for cell in row):
                     continue
                 product: dict[str, Any] = {}

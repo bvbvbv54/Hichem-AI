@@ -62,9 +62,6 @@ def create_delivery_backends() -> list[DeliveryBackend]:
     for backend_name in settings.delivery_backend_list:
         if backend_name == "local":
             backends.append(LocalDelivery())
-        elif backend_name == "s3":
-            from services.delivery.s3 import S3Delivery
-            backends.append(S3Delivery())
         elif backend_name == "webhook":
             from services.delivery.webhook import WebhookDelivery
             backends.append(WebhookDelivery())

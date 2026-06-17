@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import httpx
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Optional
+
+from sqlalchemy import select, func, and_
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from configs.settings import settings
 from configs.logging import get_logger
+from database.models.asset import Asset
+from services.settings_service import get_provider_api_key, get_setting
 
 logger = get_logger(__name__)
 
@@ -33,33 +40,94 @@ class CreditStatus:
 
 class NanoBananaCreditBalancer:
 
-    COST_PER_IMAGE_CENTS = 1.0
-    COST_PER_CLAUDE_CALL_CENTS = 0.03
     LOW_CREDIT_THRESHOLD_CENTS = 50.0
     CRITICAL_CREDIT_THRESHOLD_CENTS = 10.0
 
     def __init__(self) -> None:
-        self._cached_balance: Optional[float] = None
+        self._cached_key_valid: Optional[bool] = None
+        self._cached_models: Optional[list[str]] = None
+        self._cost_per_image_cents: float = 1.0
+        self._cost_per_claude_call_cents: float = 0.03
 
-    async def check_balance(self) -> float:
-        if self._cached_balance is not None:
-            return self._cached_balance
+    async def _load_pricing(self, session: Optional[AsyncSession] = None) -> None:
+        if session:
+            img_cost = await get_setting("cost_per_image_cents", session, "1.0")
+            claude_cost = await get_setting("cost_per_claude_call_cents", session, "0.03")
+            self._cost_per_image_cents = float(img_cost)
+            self._cost_per_claude_call_cents = float(claude_cost)
+        else:
+            self._cost_per_image_cents = 1.0
+            self._cost_per_claude_call_cents = 0.03
+
+    @property
+    def COST_PER_IMAGE_CENTS(self) -> float:
+        return self._cost_per_image_cents
+
+    @property
+    def COST_PER_CLAUDE_CALL_CENTS(self) -> float:
+        return self._cost_per_claude_call_cents
+
+    async def validate_api_key(self, session: Optional[AsyncSession] = None) -> dict:
+        api_key = ""
+        if session:
+            api_key = await get_provider_api_key("nano_banana_api_key", session)
+        if not api_key:
+            api_key = await get_provider_api_key("gemini_api_key", session) if session else ""
+        if not api_key:
+            return {"valid": False, "error": "No API key configured. Set one in Settings.", "models": []}
+
         try:
-            from services.nano_banana.client import NanoBananaClient
-            provider = NanoBananaClient()
-            try:
-                health = await provider.check_health()
-            finally:
-                await provider.close()
-            max_cents = settings.smoke_max_cost_cents if settings.smoke_test_mode else 5000.0
-            self._cached_balance = max_cents
-            return self._cached_balance
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(
+                    "https://generativelanguage.googleapis.com/v1beta/models",
+                    params={"key": api_key},
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    models = [m["name"].replace("models/", "") for m in data.get("models", [])]
+                    self._cached_key_valid = True
+                    self._cached_models = models
+                    return {"valid": True, "models": models}
+                elif resp.status_code == 403:
+                    return {"valid": False, "error": "API key invalid or unauthorized", "models": []}
+                else:
+                    return {"valid": False, "error": f"API returned HTTP {resp.status_code}", "models": []}
         except Exception as e:
-            logger.warning("credit_balance_check_failed", error=str(e))
-            return 5000.0
+            logger.warning("api_key_validation_failed", error=str(e))
+            return {"valid": False, "error": str(e), "models": []}
+
+    async def get_total_usage_cents(self, session: AsyncSession) -> float:
+        await self._load_pricing(session)
+        now = datetime.utcnow()
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        if month_start.month == 12:
+            month_end = month_start.replace(year=month_start.year + 1, month=1)
+        else:
+            month_end = month_start.replace(month=month_start.month + 1)
+        result = await session.execute(
+            select(func.count(Asset.id)).where(
+                and_(Asset.created_at >= month_start, Asset.created_at < month_end)
+            )
+        )
+        total_images = result.scalar() or 0
+        return total_images * self._cost_per_image_cents
+
+    async def check_balance(self, session: Optional[AsyncSession] = None) -> float:
+        await self._load_pricing(session)
+        budget_cents = float(settings.monthly_budget_cents)
+        if session:
+            db_budget = await get_setting("monthly_budget_cents", session, "")
+            if db_budget:
+                budget_cents = float(db_budget)
+            usage_cents = await self.get_total_usage_cents(session)
+            remaining = max(0.0, budget_cents - usage_cents)
+        else:
+            remaining = budget_cents
+        return remaining
 
     def invalidate_cache(self) -> None:
-        self._cached_balance = None
+        self._cached_key_valid = None
+        self._cached_models = None
 
     def estimate_cost(self, product_count: int, images_per_product: int = 1, use_claude: bool = True) -> CreditEstimate:
         total_images = product_count * images_per_product
@@ -67,8 +135,8 @@ class NanoBananaCreditBalancer:
         nano_banana_calls = total_images
 
         estimated_cost = (
-            claude_calls * self.COST_PER_CLAUDE_CALL_CENTS
-            + nano_banana_calls * self.COST_PER_IMAGE_CENTS
+            claude_calls * self._cost_per_claude_call_cents
+            + nano_banana_calls * self._cost_per_image_cents
         )
 
         return CreditEstimate(
@@ -77,16 +145,16 @@ class NanoBananaCreditBalancer:
             estimated_cost_cents=estimated_cost,
             claude_calls=claude_calls,
             nano_banana_calls=nano_banana_calls,
-            cost_per_image_cents=self.COST_PER_IMAGE_CENTS,
-            cost_per_claude_call_cents=self.COST_PER_CLAUDE_CALL_CENTS,
+            cost_per_image_cents=self._cost_per_image_cents,
+            cost_per_claude_call_cents=self._cost_per_claude_call_cents,
         )
 
-    async def check_sufficient_credits(self, product_count: int, images_per_product: int = 1, use_claude: bool = True) -> CreditStatus:
-        balance = await self.check_balance()
+    async def check_sufficient_credits(self, session: AsyncSession, product_count: int, images_per_product: int = 1, use_claude: bool = True) -> CreditStatus:
+        balance = await self.check_balance(session)
         estimate = self.estimate_cost(product_count, images_per_product, use_claude)
 
         deficit = estimate.estimated_cost_cents - balance
-        max_affordable = int(balance / (self.COST_PER_IMAGE_CENTS + (self.COST_PER_CLAUDE_CALL_CENTS if use_claude else 0))) if balance > 0 else 0
+        max_affordable = int(balance / (self._cost_per_image_cents + (self._cost_per_claude_call_cents if use_claude else 0))) if balance > 0 else 0
         images_per_product_effective = max(1, images_per_product)
         max_products_affordable = max(0, max_affordable // images_per_product_effective)
 

@@ -4,10 +4,12 @@ import asyncio
 import hashlib
 import json
 import math
+import re
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from sqlalchemy import select, update as sql_update
 
@@ -17,6 +19,7 @@ from configs.settings import settings
 from configs.logging import get_logger
 from database.session import async_session
 from database.repository import JobRepository
+from database.models.job import Job
 from database.models.product_link import ProductLink
 from models.enums import JobStatus
 from services.event_bus import publish, EventType, PipelineEvent
@@ -25,7 +28,7 @@ from services.time_estimator import TimeEstimator
 logger = get_logger(__name__)
 
 
-@celery_app.task(bind=True, max_retries=3, default_retry_delay=60)
+@celery_app.task(bind=True, max_retries=1, default_retry_delay=60)
 def process_single_product(self, job_id: str, url: str, project_name: str = ""):
     logger.info("processing_single_product", job_id=job_id, url=url)
     try:
@@ -132,9 +135,24 @@ async def _publish_batch_progress(batch_id: str, progress_key: str, redis_conn: 
     ))
 
 
+def _sanitize_filename(name: str) -> str:
+    name = re.sub(r'[<>:"/\\|?*]', "_", name)
+    name = re.sub(r'\s+', "_", name)
+    return name.strip("._ ")[:100] or "product"
+
+
+def _resolve_output_dir(product_name: str) -> Path:
+    name_dir = _sanitize_filename(product_name) if product_name else "product"
+    base = settings.storage_path
+    output_dir = base / name_dir
+    return output_dir
+
+
 async def _execute_product_pipeline(self: Any, job_id: str, url: str, project_name: str):
     import redis.asyncio as redis_async
     redis_conn = await redis_async.from_url(settings.redis_url)
+
+    orchestrator: Any = None
 
     try:
         estimator = TimeEstimator(redis_conn)
@@ -144,140 +162,135 @@ async def _execute_product_pipeline(self: Any, job_id: str, url: str, project_na
             await repo.update_status(job_id, JobStatus.PROCESSING)
 
         from services.acquisition import AcquisitionPipeline, AcquisitionJob
-        from services.pipeline import Stage1Analyzer, Stage2Generator
         from services.storage.local import LocalStorage
         from services.admin_notifier import get_notifier
+        from services.intelligence.orchestrator import IntelligenceOrchestrator
+        from services.intelligence.models import ChallengeType, IntelligenceEventType
 
-        get_notifier(redis_conn)
+        get_notifier()
         storage = LocalStorage()
         acquisition = AcquisitionPipeline()
-        stage1 = Stage1Analyzer(redis_conn)
-        stage2 = Stage2Generator()
+        orchestrator = IntelligenceOrchestrator()
 
         failure_type = None
         failure_detail = None
-        drive_folder_url = None
         parent_batch_id = None
+        session_id = ""
 
-        # Fetch parent batch ID early for error tracking
         parent_batch_id = await _get_parent_batch_id(job_id)
 
         try:
             await _update_product_link_status(url, "scraping", job_id=job_id)
 
-            # Stage 1: Acquisition
+            # Intelligence: prepare session and request context
+            domain, marketplace, ctx = await orchestrator.prepare_request(url)
+            session_id = ctx["session"].id
+
             stage_start = time.monotonic()
             await _publish_stage_event(job_id, "acquiring_images", "Downloading product images")
 
             acq_job = AcquisitionJob(job_id=job_id, url=url, max_images=5)
             acq_result = await acquisition.run(acq_job)
 
+            duration_ms = (time.monotonic() - stage_start) * 1000
+
             if not acq_result.success or not acq_result.image_paths:
                 failure_type = "acquisition"
                 failure_detail = acq_result.failure_detail or "No images acquired"
+
+                was_captcha = acq_result.failure_type in ("captcha",)
+                was_blocked = acq_result.failure_type in ("bot_blocked", "rate_limited")
+                if acq_result.failure_type == "captcha" and acq_result.required_browser:
+                    await orchestrator.captcha_manager.record_event(
+                        domain=domain,
+                        session_id=session_id,
+                        url=url,
+                        challenge_type=ChallengeType.CAPTCHA,
+                        html=acq_result.failure_detail or "",
+                        marketplace=marketplace,
+                    )
+                await orchestrator.record_failure(
+                    url=url,
+                    failure_type=failure_type,
+                    was_captcha=was_captcha,
+                    was_blocked=was_blocked,
+                    duration_ms=duration_ms,
+                    html=acq_result.failure_detail or "",
+                    session_id=session_id,
+                )
+                if acq_result.failure_type == "captcha":
+                    await orchestrator.session_manager.record_failure(ctx["session"], "captcha")
+                elif acq_result.failure_type == "bot_blocked":
+                    await orchestrator.session_manager.record_failure(ctx["session"], "blocked")
+
                 await _update_product_link_status(url, "failed", error_message=failure_detail, failure_type=failure_type)
                 raise RuntimeError(failure_detail)
 
+            await orchestrator.record_success(url, extracted=True, duration_ms=duration_ms)
+            await orchestrator.session_manager.record_success(ctx["session"], extracted=True)
+
             scraped_count = len(acq_result.image_paths)
-            await _update_product_link_status(url, "scraped", scraped_image_count=scraped_count)
+            product_name = acq_result.page_title or Path(urlparse(url).path).stem.replace("-", " ").replace("_", " ").title() or url
+            product_description = acq_result.page_description
+
+            await _update_product_link_status(url, "scraped", product_name=product_name, scraped_image_count=scraped_count)
 
             await estimator.record_stage(job_id, "acquisition", time.monotonic() - stage_start)
 
-            # Stage 2: AI Analysis
-            stage_start = time.monotonic()
-            await _publish_stage_event(job_id, "analyzing_images", "Analyzing product with AI")
+            output_dir = _resolve_output_dir(product_name)
+            images_dir = output_dir / "images"
+            images_dir.mkdir(parents=True, exist_ok=True)
 
-            product_spec = await stage1.analyze(acq_result.image_paths, url)
+            saved_paths: list[str] = []
+            import shutil
+            for img_path in acq_result.image_paths:
+                dst = images_dir / Path(img_path).name
+                shutil.copy2(img_path, str(dst))
+                saved_paths.append(str(dst))
 
-            if product_spec.translated_labels:
-                await _publish_stage_event(job_id, "translating_labels", "Localizing labels")
-                await estimator.record_stage(job_id, "translation", time.monotonic() - stage_start)
+            if product_description:
+                desc_path = output_dir / "description.json"
+                desc_path.write_text(json.dumps({
+                    "product_name": product_name,
+                    "description": product_description,
+                    "url": url,
+                    "job_id": job_id,
+                    "scraped_at": datetime.utcnow().isoformat(),
+                }, indent=2))
 
-            # Stage 3: Generation
-            stage_start = time.monotonic()
-            await _publish_stage_event(job_id, "generating_images", "Generating localized images")
-
-            from services.pipeline import GenerationPlan
-
-            plan = GenerationPlan(
-                product_spec=product_spec,
-                reference_image_paths=acq_result.image_paths,
-                output_count=min(3, len(acq_result.image_paths)),
-                style_directive="American e-commerce, white background, studio lighting",
-                negative_prompt=(
-                    "chinese text, chinese characters, blurry, watermark, low quality, "
-                    "distorted proportions, missing parts, extra objects, busy background, "
-                    "dark background, shadows on product, reflections on product"
-                ),
-            )
-
-            generated_assets = await stage2.generate(plan, job_id)
-            if not generated_assets:
-                failure_type = "ai"
-                failure_detail = "AI generation produced no outputs"
-                raise RuntimeError(failure_detail)
-
-            await estimator.record_stage(job_id, "generation", time.monotonic() - stage_start)
-
-            # Stage 4: Save locally
-            output_dir = Path(settings.storage_path) / project_name / job_id
-            output_dir.mkdir(parents=True, exist_ok=True)
-
-            selected_paths: list[str] = []
-            for asset in generated_assets:
-                if asset.selected:
-                    dst = output_dir / Path(asset.local_path).name
-                    import shutil
-                    shutil.copy2(asset.local_path, str(dst))
-                    selected_paths.append(str(dst))
+            # Intelligence: add product to knowledge graph
+            try:
+                await orchestrator.add_to_knowledge_graph(
+                    name=product_name,
+                    marketplace=marketplace,
+                    url=url,
+                    attributes={
+                        "description": product_description,
+                        "image_count": scraped_count,
+                        "job_id": job_id,
+                    },
+                    image_hashes=[h for h in acq_result.image_hashes if h],
+                )
+            except Exception as kg_error:
+                logger.warning("knowledge_graph_update_failed", job_id=job_id, error=str(kg_error))
 
             result_data = {
                 "job_id": job_id,
                 "url": url,
-                "product_name": product_spec.product_name,
-                "images_selected": len(selected_paths),
-                "selected_assets": selected_paths,
+                "product_name": product_name,
+                "product_description": product_description,
+                "images_scraped": len(saved_paths),
+                "saved_assets": saved_paths,
+                "output_directory": str(output_dir),
+                "stage": "scraped_only",
+                "marketplace": marketplace,
+                "session_id": session_id,
             }
 
-            await _update_product_link_status(url, "completed",
-                product_name=product_spec.product_name or "",
-                generated_image_count=len(selected_paths),
-                job_id=job_id,
-            )
-
-            # Stage 5: Google Drive
-            stage_start = time.monotonic()
-            if settings.google_drive_auto_upload and selected_paths:
-                try:
-                    await _publish_stage_event(job_id, "saving_to_drive", "Saving to Google Drive")
-                    from services.storage.google_drive import get_drive_manager
-                    gdrive = get_drive_manager()
-                    if await gdrive.authenticate():
-                        upload_result = await gdrive.upload_product_outputs(
-                            product_name=product_spec.product_name or f"job_{job_id}",
-                            file_paths=selected_paths,
-                            root_folder_name=settings.google_drive_root_folder,
-                        )
-                        drive_folder_url = upload_result.get("folder_url")
-                        result_data["drive_folder_url"] = drive_folder_url
-
-                        await publish(PipelineEvent(
-                            event_type=EventType.DRIVE_SAVED,
-                            job_id=job_id,
-                            data={"folder_url": drive_folder_url},
-                        ))
-                    await estimator.record_stage(job_id, "drive_upload", time.monotonic() - stage_start)
-                except Exception as e:
-                    failure_type = "drive"
-                    failure_detail = str(e)
-                    logger.warning("drive_upload_failed", job_id=job_id, error=str(e))
-
-            # Finalize
             meta = {
                 **result_data,
                 "url": url,
-                "product_name": product_spec.product_name or "",
-                "drive_folder_url": drive_folder_url or "",
+                "product_name": product_name,
             }
             async with async_session() as session:
                 repo = JobRepository(session)
@@ -286,7 +299,7 @@ async def _execute_product_pipeline(self: Any, job_id: str, url: str, project_na
                     "completed_at": datetime.utcnow(),
                 })
 
-            await _publish_stage_event(job_id, "completed", "Complete")
+            await _publish_stage_event(job_id, "completed", "Scraping complete - no AI generation")
             await _update_job_status(job_id, JobStatus.COMPLETED, progress=100.0)
 
             await publish(PipelineEvent(
@@ -294,19 +307,20 @@ async def _execute_product_pipeline(self: Any, job_id: str, url: str, project_na
                 job_id=job_id,
                 data={
                     "url": url,
-                    "product_name": product_spec.product_name or "",
-                    "drive_folder_url": drive_folder_url or "",
+                    "product_name": product_name,
+                    "stage": "scraped_only",
+                    "marketplace": marketplace,
                 },
             ))
 
-            # Track batch progress
             if parent_batch_id:
                 track_key = f"batch:{parent_batch_id}:track"
                 await redis_conn.hincrby(track_key, "completed", 1)
 
             await estimator.record_stage(job_id, "total_product", time.monotonic() - (await _get_job_start_time(job_id, redis_conn)))
 
-            logger.info("product_completed", job_id=job_id, url=url, images=len(selected_paths))
+            logger.info("product_scraped", job_id=job_id, url=url, images=len(saved_paths),
+                product_name=product_name, marketplace=marketplace)
 
         except Exception as exc:
             if failure_type is None:
@@ -323,6 +337,14 @@ async def _execute_product_pipeline(self: Any, job_id: str, url: str, project_na
             try:
                 retries_left = self.max_retries - self.request.retries if hasattr(self, "max_retries") else 0
             except Exception:
+                retries_left = 0
+
+            non_retryable = False
+            if failure_detail:
+                fd = failure_detail.lower()
+                if any(kw in fd for kw in ["captcha", "no image urls", "no images acquired"]):
+                    non_retryable = True
+            if non_retryable:
                 retries_left = 0
 
             if retries_left > 0:
@@ -354,6 +376,11 @@ async def _execute_product_pipeline(self: Any, job_id: str, url: str, project_na
 
     finally:
         await redis_conn.aclose()
+        if orchestrator:
+            try:
+                await orchestrator.browser_pool.close()
+            except Exception:
+                pass
 
 
 async def _update_product_link_status(url: str, status: str, **extra):

@@ -16,7 +16,7 @@ logger = get_logger(__name__)
 
 VALID_MIME_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 
-MIN_SIZE = 5 * 1024
+MIN_SIZE = int(settings.scraper_min_image_size_kb * 1024)  # controlled by scraper_min_image_size_kb
 MAX_SIZE = 50 * 1024 * 1024
 
 

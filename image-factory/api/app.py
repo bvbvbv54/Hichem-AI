@@ -60,6 +60,8 @@ def create_app() -> FastAPI:
     from api.routes.consumption import router as consumption_router
     from api.routes.google_drive import router as google_drive_router
     from api.routes.content import router as content_router
+    from api.routes.credits import router as credits_router
+    from api.routes.scrapfly_admin_page import router as scrapfly_page_router
 
     app.include_router(health_router, prefix="/api/v1")
     app.include_router(generation_router, prefix="/api/v1")
@@ -78,6 +80,8 @@ def create_app() -> FastAPI:
     app.include_router(consumption_router, prefix="/api/v1")
     app.include_router(google_drive_router, prefix="/api/v1")
     app.include_router(content_router, prefix="/api/v1")
+    app.include_router(credits_router, prefix="/api/v1")
+    app.include_router(scrapfly_page_router, prefix="/api/v1")
 
     return app
 

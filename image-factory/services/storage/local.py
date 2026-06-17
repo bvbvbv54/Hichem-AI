@@ -79,7 +79,4 @@ class LocalStorage(StorageBackend):
 
 
 def get_storage_backend() -> StorageBackend:
-    if settings.storage_backend == "s3":
-        from services.storage.s3 import S3Storage
-        return S3Storage()
     return LocalStorage()

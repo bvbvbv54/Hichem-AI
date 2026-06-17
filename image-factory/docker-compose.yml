@@ -115,6 +115,12 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: celery -A workers.celery_app inspect ping
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
     logging: *default-logging
     deploy:
       resources:
@@ -137,6 +143,12 @@ services:
       api:
         condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: wget -qO- http://127.0.0.1:3000/login || exit 1
+      interval: 30s
+      timeout: 10s
+      start_period: 15s
+      retries: 3
     logging: *default-logging
     deploy:
       resources:
@@ -158,12 +170,24 @@ services:
         condition: service_healthy
     restart: unless-stopped
     logging: *default-logging
-    profiles:
-      - monitoring
     deploy:
       resources:
         limits:
           memory: 256M
+
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: imagefactory-ngrok
+    command: http dashboard:3000 --url=${NGROK_DOMAIN:-}
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN:-}
+    ports:
+      - "4040:4040"
+    depends_on:
+      dashboard:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *default-logging
 
 volumes:
   postgres-data:

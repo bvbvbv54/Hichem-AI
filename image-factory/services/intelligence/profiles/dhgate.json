@@ -1,0 +1,28 @@
+{
+  "domain": "dhgate.com",
+  "name": "DHgate",
+  "selectors": {
+    "title": ".product-name, h1, .item-title",
+    "price": ".product-price, .price, .our-price",
+    "description": ".product-description, .item-description",
+    "images": ".product-image img, .gallery img, .thumb-images img"
+  },
+  "json_paths": {
+    "title": "product.name, itemData.title",
+    "price": "product.price, itemData.price",
+    "images": "product.images, itemData.images"
+  },
+  "captcha_signatures": ["captcha", "security-check"],
+  "session_rules": {
+    "max_requests_per_session": 40,
+    "session_ttl_hours": 24,
+    "cooldown_minutes": 20
+  },
+  "request_rules": {
+    "max_concurrent": 3,
+    "delay_min": 3.0,
+    "delay_max": 6.0,
+    "backoff_strategy": "exponential"
+  },
+  "preferred_extraction_method": "static_html"
+}

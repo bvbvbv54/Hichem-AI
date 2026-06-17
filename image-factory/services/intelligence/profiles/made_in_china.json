@@ -1,0 +1,28 @@
+{
+  "domain": "made-in-china.com",
+  "name": "Made-in-China",
+  "selectors": {
+    "title": ".product-name, h1, .detail-title",
+    "price": ".product-price, .price, .cost",
+    "description": ".product-description, .detail-desc",
+    "images": ".product-img img, .gallery img, .detail-img img"
+  },
+  "json_paths": {
+    "title": "product.name, detail.title",
+    "price": "product.price, detail.price",
+    "images": "product.images, detail.gallery"
+  },
+  "captcha_signatures": ["captcha", "verify-code"],
+  "session_rules": {
+    "max_requests_per_session": 50,
+    "session_ttl_hours": 24,
+    "cooldown_minutes": 15
+  },
+  "request_rules": {
+    "max_concurrent": 3,
+    "delay_min": 2.0,
+    "delay_max": 5.0,
+    "backoff_strategy": "linear"
+  },
+  "preferred_extraction_method": "static_html"
+}

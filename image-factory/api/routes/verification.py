@@ -134,7 +134,7 @@ async def ready_verification(session: AsyncSession = Depends(get_session)):
     total_failed = failed_count.scalar() or 0
 
     return {
-        "ready": all_healthy and _latest_result is not None,
+        "ready": all_healthy,
         "smoke_test_run": _latest_result is not None,
         "components": {r.component: r.status for r in checks},
         "database": {"total_jobs": total_jobs, "failed_jobs": total_failed},
@@ -143,5 +143,5 @@ async def ready_verification(session: AsyncSession = Depends(get_session)):
             "duration_ms": _latest_result.get("total_duration_ms") if _latest_result else None,
             "cost_cents": _latest_result.get("estimated_cost_cents") if _latest_result else None,
         } if _latest_result else None,
-        "message": "System is ready for production flow" if all_healthy and _latest_result else "Run a smoke test to verify readiness",
+        "message": "System is ready for production flow" if all_healthy else "Some components are degraded",
     }

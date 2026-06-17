@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
-from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -14,12 +12,13 @@ class Settings(BaseSettings):
     scraper_connect_timeout: int = 10
     scraper_read_timeout: int = 30
     scraper_max_image_size_mb: int = 50
-    scraper_min_image_size_kb: int = 5
+    scraper_min_image_size_kb: float = 0.5
     scraper_max_images_per_url: int = 10
     scraper_alert_threshold: float = 0.5
     scraper_max_concurrent: int = 5
     scraper_cache_ttl_days: int = 7
-    use_browser_fallback: bool = True
+    use_browser_fallback: bool = False
+    use_browser_primary: bool = False
     playwright_headless: bool = True
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -31,7 +30,7 @@ class Settings(BaseSettings):
     # Application
     app_name: str = "ImageFactory"
     app_version: str = "1.0.0"
-    app_env: Literal["development", "staging", "production"] = "production"
+    app_env: str = "production"
     debug: bool = False
     secret_key: str = "change-me"
 
@@ -52,16 +51,32 @@ class Settings(BaseSettings):
     redis_url: str = "redis://redis:6379/0"
     redis_broker_url: str = "redis://redis:6379/1"
 
-    # Claude
+    # Claude defaults (overridable from DB)
     claude_api_key: str = ""
     claude_model: str = "claude-sonnet-4-20250514"
     claude_max_tokens: int = 4096
     claude_temperature: float = 0.7
 
-    # Gemini
+    # Gemini / Nano Banana defaults
     gemini_api_key: str = ""
+    nano_banana_api_key: str = ""
     gemini_vision_model: str = "gemini-2.0-flash"
     gemini_text_model: str = "gemini-2.0-flash"
+
+    # OpenRouter defaults
+    openrouter_api_key: str = ""
+
+    # Image Provider defaults (overridable from DB)
+    image_provider: str = "openrouter"
+    image_provider_timeout: int = 120
+    image_provider_max_retries: int = 3
+    image_provider_poll_interval: int = 2
+    replicate_api_key: str = ""
+    stabilityai_api_key: str = ""
+    openai_api_key: str = ""
+
+    # Budget default (overridable from DB)
+    monthly_budget_cents: int = 10000
 
     # Batch processing
     batch_max_concurrent: int = 3
@@ -80,39 +95,17 @@ class Settings(BaseSettings):
     google_drive_auto_upload: bool = True
     google_drive_make_public: bool = False
 
-    # OpenRouter
-    openrouter_api_key: str = ""
-    openrouter_timeout: int = 120
-    openrouter_max_retries: int = 3
-
-    # Image Provider
-    image_provider: Literal["replicate", "stabilityai", "openai", "openrouter"] = "openrouter"
-    image_provider_api_key: str = ""
+    # Image Provider defaults (overridable from DB)
     image_provider_timeout: int = 120
     image_provider_max_retries: int = 3
     image_provider_poll_interval: int = 2
 
-    replicate_api_key: str = ""
-    stabilityai_api_key: str = ""
-    openai_api_key: str = ""
-
-    # Storage
-    storage_backend: Literal["local", "s3"] = "local"
+    # Storage (local only — no S3)
     storage_local_path: str = "./outputs"
-    storage_s3_bucket: str = ""
-    storage_s3_access_key: str = ""
-    storage_s3_secret_key: str = ""
-    storage_s3_endpoint: str = ""
-    storage_s3_region: str = "us-east-1"
 
-    # Delivery
+    # Delivery (local only — no S3)
     delivery_backends: str = "local"
     delivery_local_path: str = "./outputs"
-    delivery_s3_bucket: str = ""
-    delivery_s3_access_key: str = ""
-    delivery_s3_secret_key: str = ""
-    delivery_s3_endpoint: str = ""
-    delivery_s3_region: str = "us-east-1"
     delivery_webhook_url: str = ""
     delivery_webhook_secret: str = ""
 
@@ -126,6 +119,19 @@ class Settings(BaseSettings):
     celery_task_retry_delay: int = 30
 
     # Product Localization
+    # Scrapfly
+    scrapfly_enabled: bool = True
+    scrapfly_monthly_budget: int = 3000
+
+    # Proxy & request delay
+    proxy_enabled: bool = True
+    proxy_refresh_interval: int = 300
+    proxy_max_latency: float = 5.0
+    proxy_test_url: str = "http://httpbin.org/ip"
+    request_delay_min: float = 2.0
+    request_delay_max: float = 5.0
+    request_delay_enabled: bool = True
+
     extractor_default_language: str = "en"
     extractor_user_agent: str = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -144,7 +150,7 @@ class Settings(BaseSettings):
 
     # Logging
     log_level: str = "INFO"
-    log_format: Literal["json", "text"] = "json"
+    log_format: str = "json"
     log_output: str = "stdout"
 
     @property
@@ -161,10 +167,3 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
-
-# Override from environment for non-standard keys
-settings.claude_api_key = os.getenv("CLAUDE_API_KEY", settings.claude_api_key)
-settings.replicate_api_key = os.getenv("REPLICATE_API_KEY", settings.replicate_api_key)
-settings.stabilityai_api_key = os.getenv("STABILITYAI_API_KEY", settings.stabilityai_api_key)
-settings.openai_api_key = os.getenv("OPENAI_API_KEY", settings.openai_api_key)
-settings.openrouter_api_key = os.getenv("OPENROUTER_API_KEY", settings.openrouter_api_key)

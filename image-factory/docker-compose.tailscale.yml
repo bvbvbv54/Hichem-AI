@@ -1,0 +1,28 @@
+services:
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: imagefactory-tailscale
+    hostname: imagefactory
+    environment:
+      - TS_AUTHKEY=${TAILSCALE_AUTHKEY:-}
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_SERVE_PORT=3000
+    volumes:
+      - tailscale-data:/var/lib/tailscale
+      - /var/run/tailscale/tailscale.sock:/var/run/tailscale/tailscale.sock
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - SYS_MODULE
+    network_mode: host
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    profiles:
+      - tailscale
+
+volumes:
+  tailscale-data:

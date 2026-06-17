@@ -98,7 +98,8 @@ class SystemChecker:
         try:
             from services.delivery.local import create_delivery_backends
             backends = create_delivery_backends()
-            healthy = all(b.check_health() for b in backends)
+            results = await asyncio.gather(*[b.check_health() for b in backends], return_exceptions=True)
+            healthy = all(r is True or r is None for r in results)
             latency = (time.time() - start) * 1000
             if healthy:
                 return CheckResult("delivery", "healthy", f"{len(backends)} delivery backend(s) ready", latency)
@@ -109,19 +110,17 @@ class SystemChecker:
     async def check_ai_provider(self) -> CheckResult:
         start = time.time()
         try:
-            from services.nano_banana.client import NanoBananaClient
-            provider = NanoBananaClient()
-            api_key = getattr(settings, f"{settings.image_provider}_api_key", "")
-            if not api_key:
-                latency = (time.time() - start) * 1000
-                return CheckResult("ai_provider", "warning", f"No API key configured for '{settings.image_provider}'", latency)
-            healthy = await provider.check_health()
+            from services.nano_banana.credit_balancer import get_credit_balancer
+            balancer = get_credit_balancer()
+            key_info = await balancer.validate_api_key()
             latency = (time.time() - start) * 1000
-            if healthy:
-                return CheckResult("ai_provider", "healthy", f"Provider '{settings.image_provider}' reachable", latency)
-            return CheckResult("ai_provider", "warning", f"Provider '{settings.image_provider}' health check failed", latency)
+            if key_info.get("valid"):
+                model_count = len(key_info.get("models", []))
+                return CheckResult("ai_provider", "healthy", f"Gemini API key valid ({model_count} models available, credit checks OK)", latency)
+            return CheckResult("ai_provider", "warning", f"API key issue: {key_info.get('error', 'unknown error')}. Configure one in Settings.", latency)
         except Exception as e:
-            return CheckResult("ai_provider", "offline", f"Provider error: {e}", details={"error": str(e)})
+            latency = (time.time() - start) * 1000
+            return CheckResult("ai_provider", "offline", f"Credit check error: {e}", latency, details={"error": str(e)})
 
     async def check_worker(self) -> CheckResult:
         """Check if Celery worker is active and responsive."""

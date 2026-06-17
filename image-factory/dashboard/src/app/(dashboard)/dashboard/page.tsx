@@ -8,7 +8,7 @@ import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import {
-  Package, Image, Loader2, CheckCircle2, XCircle, Timer, TrendingUp, HardDrive,
+  Package, Image, Loader2, CheckCircle2, XCircle, Timer, TrendingUp, HardDrive, ShieldAlert, Zap,
 } from "lucide-react";
 import { SystemReadinessPanel } from "@/components/dashboard/system-readiness";
 import { ActiveJobsPanel } from "@/components/dashboard/active-jobs-panel";
@@ -41,6 +41,24 @@ export default function DashboardPage() {
   const { data: systemStatus } = useQuery({
     queryKey: ["system-status"],
     queryFn: () => api.getSystemStatus(),
+    refetchInterval: 15000,
+  });
+
+  const { data: captchaData } = useQuery({
+    queryKey: ["captcha-intel"],
+    queryFn: () => api.getCaptchaIntelligence().catch(() => null),
+    refetchInterval: 30000,
+  });
+
+  const { data: scrapflyUsage } = useQuery({
+    queryKey: ["scrapfly-usage"],
+    queryFn: () => api.getScrapflyUsage().catch(() => null),
+    refetchInterval: 30000,
+  });
+
+  const { data: aiLimiter } = useQuery({
+    queryKey: ["ai-limiter"],
+    queryFn: () => api.getAiLimiter().catch(() => null),
     refetchInterval: 15000,
   });
 
@@ -128,20 +146,21 @@ export default function DashboardPage() {
       </Card>
 
       {/* Stat cards row */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
         <StatCard icon={Package} label="Total Products" value={total} />
         <StatCard icon={Image} label="Images Generated" value={totalImages} />
         <StatCard icon={TrendingUp} label="AI Credits" value={stats?.ai_credits_used ?? 0} />
         <StatCard icon={Timer} label="Avg Time" value={stats?.avg_processing_time_seconds ? `${Math.round(stats.avg_processing_time_seconds / 60)}m` : "\u2014"} />
+        <StatCard icon={ShieldAlert} label="CAPTCHAs Today" value={captchaData?.total_captchas_today ?? 0} />
       </div>
 
-      {/* Queue + Storage + Active Jobs + Admin Controls */}
-      <div className="grid gap-4 lg:grid-cols-2">
+      {/* Queue + Batch + CAPTCHA + Admin */}
+      <div className="grid gap-4 lg:grid-cols-3">
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-sm font-medium flex items-center gap-2">
               <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-pulse" />
-              Queue
+              Queue / Batch
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -173,24 +192,126 @@ export default function DashboardPage() {
           </CardContent>
         </Card>
 
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm font-medium flex items-center gap-2">
+              <ShieldAlert className="h-3.5 w-3.5 text-amber-500" />
+              CAPTCHA Intelligence
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {captchaData && captchaData.top_blocking_marketplaces ? (
+              <div className="space-y-2">
+                {captchaData.top_blocking_marketplaces.slice(0, 5).map((m: any) => (
+                  <div key={m.domain} className="flex items-center justify-between text-xs">
+                    <span className="font-medium truncate">{m.domain.replace(".com", "")}</span>
+                    <Badge className="text-[10px] bg-rose-500/10 text-rose-500 border-rose-500/20 shrink-0">
+                      {m.captcha_count}
+                    </Badge>
+                  </div>
+                ))}
+                {captchaData.top_blocking_marketplaces.length === 0 && (
+                  <p className="text-xs text-muted-foreground">No CAPTCHA events recorded yet</p>
+                )}
+                <div className="flex justify-between text-[10px] text-muted-foreground pt-1 border-t border-muted-foreground/10">
+                  <span>Total today: {captchaData.total_captchas_today}</span>
+                  <span>7d window</span>
+                </div>
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">No CAPTCHA data available</p>
+            )}
+          </CardContent>
+        </Card>
+
         <AdminControlsPanel />
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid gap-4 lg:grid-cols-3">
         <ActiveJobsPanel />
 
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-sm font-medium flex items-center gap-2">
               <HardDrive className="h-3.5 w-3.5" />
-              Nano Banana Credits
+              AI Limiter
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-xl font-bold">${(stats?.estimated_cost ? (stats.estimated_cost / 100).toFixed(2) : "0.00")}</div>
-            <p className="text-xs text-muted-foreground">
-              Balance: ${(stats?.nano_banana_balance ? (stats.nano_banana_balance / 100).toFixed(2) : "0.00")} &middot; ${(stats?.nano_banana_cost_per_image || 1).toFixed(2)}/img
-            </p>
+            {aiLimiter ? (
+              <>
+                <div className="flex items-baseline gap-1">
+                  <span className="text-2xl font-bold">${aiLimiter.usage_dollars}</span>
+                  <span className="text-xs text-muted-foreground">of $${aiLimiter.monthly_budget_dollars}</span>
+                </div>
+                <div className="w-full bg-muted rounded-full h-2 mt-2">
+                  <div className={`h-2 rounded-full transition-all ${
+                    aiLimiter.usage_percent > 80 ? "bg-rose-500" :
+                    aiLimiter.usage_percent > 50 ? "bg-amber-500" : "bg-emerald-500"
+                  }`} style={{width: `${Math.min(aiLimiter.usage_percent, 100)}%`}} />
+                </div>
+                <div className="flex justify-between text-xs text-muted-foreground mt-1">
+                  <span>${aiLimiter.remaining_dollars} left</span>
+                  <span>{aiLimiter.usage_percent}% used</span>
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {aiLimiter.total_images_this_month} images &middot; ${aiLimiter.cost_per_image_dollars}/img
+                </p>
+                {aiLimiter.low_credits && (
+                  <p className="text-xs text-amber-500 font-medium mt-1">Low budget remaining</p>
+                )}
+                {aiLimiter.critical_credits && (
+                  <p className="text-xs text-rose-500 font-medium mt-1">Critically low - generation may stop</p>
+                )}
+              </>
+            ) : (
+              <p className="text-xs text-muted-foreground">Budget data unavailable</p>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm font-medium flex items-center gap-2">
+              <Zap className="h-3.5 w-3.5 text-amber-500" />
+              ScrapFly Remaining
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {scrapflyUsage ? (
+              <>
+                <div className="flex items-baseline gap-1">
+                  <span className="text-2xl font-bold">{scrapflyUsage.scrapes_remaining_actual ?? "?"}</span>
+                  <span className="text-xs text-muted-foreground">scrapes left</span>
+                </div>
+                <div className="flex items-baseline gap-1">
+                  <span className="text-lg font-semibold">{scrapflyUsage.remaining_credits ?? 0}</span>
+                  <span className="text-xs text-muted-foreground">credits remain</span>
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {scrapflyUsage.key_count ?? 0} key{(scrapflyUsage.key_count ?? 0) !== 1 ? "s" : ""} &middot; ~{scrapflyUsage.cost_per_product ?? 9} pts/product
+                </p>
+                {!scrapflyUsage.has_usage_data && (
+                  <p className="text-xs text-muted-foreground mt-1">No requests yet - run a scrape to see usage</p>
+                )}
+                <div className="mt-1">
+                  {(scrapflyUsage.per_key_summary || []).map((k: any) => (
+                    <div key={k.key} className="flex justify-between text-[10px] text-muted-foreground">
+                      <span className="font-mono truncate max-w-[140px]">{k.key}</span>
+                      <span>{k.status === "tracked" ? `${k.remaining} left` : "N/A (untracked)"}</span>
+                    </div>
+                  ))}
+                </div>
+                {scrapflyUsage.scrapes_remaining_actual > 0 && scrapflyUsage.scrapes_remaining_actual < 10 && (
+                  <p className="text-xs text-amber-500 font-medium mt-1">Low credits remaining</p>
+                )}
+                {scrapflyUsage.has_usage_data && scrapflyUsage.scrapes_remaining_actual === 0 && (
+                  <p className="text-xs text-rose-500 font-medium mt-1">No credits left - add more keys</p>
+                )}
+              </>
+            ) : (
+              <p className="text-xs text-muted-foreground">Usage data unavailable</p>
+            )}
           </CardContent>
         </Card>
       </div>

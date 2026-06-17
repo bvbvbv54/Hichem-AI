@@ -12,6 +12,7 @@ celery_app = Celery(
         "tasks.generation",
         "tasks.delivery",
         "tasks.product",
+        "tasks.intelligence",
     ],
 )
 
@@ -28,3 +29,41 @@ celery_app.conf.update(
     worker_max_tasks_per_child=50,
     worker_concurrency=settings.celery_worker_concurrency,
 )
+
+celery_app.conf.beat_schedule = {
+    "daily-trend-report": {
+        "task": "tasks.intelligence.generate_daily_trend_report",
+        "schedule": 86400.0,
+        "kwargs": {},
+    },
+    "weekly-trend-report": {
+        "task": "tasks.intelligence.generate_weekly_trend_report",
+        "schedule": 604800.0,
+        "kwargs": {},
+    },
+    "health-report": {
+        "task": "tasks.intelligence.generate_health_report",
+        "schedule": 3600.0,
+        "kwargs": {},
+    },
+    "session-maintenance": {
+        "task": "tasks.intelligence.maintain_sessions",
+        "schedule": 1800.0,
+        "kwargs": {},
+    },
+    "captcha-report": {
+        "task": "tasks.intelligence.generate_captcha_report",
+        "schedule": 86400.0,
+        "kwargs": {},
+    },
+    "session-cleanup": {
+        "task": "tasks.intelligence.cleanup_stale_sessions",
+        "schedule": 43200.0,
+        "kwargs": {},
+    },
+    "opportunity-report": {
+        "task": "tasks.intelligence.generate_marketplace_opportunity_report",
+        "schedule": 86400.0,
+        "kwargs": {},
+    },
+}

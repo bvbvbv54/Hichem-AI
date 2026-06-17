@@ -1,0 +1,28 @@
+{
+  "domain": "jd.com",
+  "name": "JD",
+  "selectors": {
+    "title": ".sku-name, .item-title, h1",
+    "price": ".price, .jd-price, .p-price",
+    "description": ".detail-desc, .product-desc",
+    "images": ".spec-items img, .gallery img"
+  },
+  "json_paths": {
+    "title": "itemInfo.skuName, page.title",
+    "price": "itemInfo.price, page.price",
+    "images": "itemInfo.imageList, page.images"
+  },
+  "captcha_signatures": ["jd-captcha", "slide.jd.com"],
+  "session_rules": {
+    "max_requests_per_session": 60,
+    "session_ttl_hours": 48,
+    "cooldown_minutes": 15
+  },
+  "request_rules": {
+    "max_concurrent": 4,
+    "delay_min": 2.0,
+    "delay_max": 5.0,
+    "backoff_strategy": "linear"
+  },
+  "preferred_extraction_method": "static_html"
+}

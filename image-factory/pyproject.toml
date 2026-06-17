@@ -23,7 +23,6 @@ worker = [
     "redis>=5.2.0",
     "httpx>=0.27.0",
     "anthropic>=0.45.0",
-    "boto3>=1.35.0",
     "Pillow>=11.0.0",
     "aiofiles>=24.1.0",
     "beautifulsoup4>=4.12.0",

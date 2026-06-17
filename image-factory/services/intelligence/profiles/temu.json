@@ -1,0 +1,28 @@
+{
+  "domain": "temu.com",
+  "name": "Temu",
+  "selectors": {
+    "title": ".product-title, h1, .goods-name",
+    "price": ".price, .product-price, .sale-price",
+    "description": ".product-desc, .detail-description",
+    "images": ".gallery img, .product-image img, .swiper img"
+  },
+  "json_paths": {
+    "title": "pageData.title, productInfo.name",
+    "price": "pageData.price, productInfo.price",
+    "images": "pageData.images, productInfo.gallery"
+  },
+  "captcha_signatures": ["captcha", "verify"],
+  "session_rules": {
+    "max_requests_per_session": 30,
+    "session_ttl_hours": 12,
+    "cooldown_minutes": 30
+  },
+  "request_rules": {
+    "max_concurrent": 2,
+    "delay_min": 4.0,
+    "delay_max": 8.0,
+    "backoff_strategy": "exponential"
+  },
+  "preferred_extraction_method": "json_ld"
+}

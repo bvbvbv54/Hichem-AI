@@ -1,0 +1,28 @@
+{
+  "domain": "alibaba.com",
+  "name": "Alibaba",
+  "selectors": {
+    "title": "h1[class*='title'], .product-title",
+    "price": ".product-price, .price",
+    "description": ".product-description, .detail-description",
+    "images": ".product-gallery img, .image-gallery img"
+  },
+  "json_paths": {
+    "title": "pageData.title, product.title",
+    "price": "pageData.price, product.price",
+    "images": "pageData.images, product.images"
+  },
+  "captcha_signatures": ["captcha.alibaba", "aliyun-captcha"],
+  "session_rules": {
+    "max_requests_per_session": 40,
+    "session_ttl_hours": 24,
+    "cooldown_minutes": 30
+  },
+  "request_rules": {
+    "max_concurrent": 3,
+    "delay_min": 3.0,
+    "delay_max": 7.0,
+    "backoff_strategy": "exponential"
+  },
+  "preferred_extraction_method": "embedded_json"
+}

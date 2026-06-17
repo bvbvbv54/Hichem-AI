@@ -9,6 +9,7 @@ from api.schemas.job import JobResponse, JobListResponse, JobStatusResponse, Bat
 from api.dependencies import get_job_repo, get_asset_repo
 from database.repository import JobRepository, AssetRepository
 from models.enums import JobStatus
+from services.notifications import send_notification, NotificationLevel
 
 router = APIRouter()
 
@@ -113,6 +114,13 @@ async def cancel_job(
         raise HTTPException(status_code=400, detail=f"Job already in terminal state: {job.status}")
 
     await repo.update_status(job_id, JobStatus.CANCELLED)
+    await send_notification(
+        user_id="",
+        title="Job cancelled",
+        message=f"Job {job_id} was cancelled. Product: {job.prompt or job.project_name}",
+        event_type="job_cancelled",
+        level=NotificationLevel.WARNING,
+    )
     return {"status": "cancelled", "job_id": job_id}
 
 

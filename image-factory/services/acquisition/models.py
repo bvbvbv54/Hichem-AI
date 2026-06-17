@@ -35,6 +35,8 @@ class AcquisitionResult:
     success: bool
     image_paths: list[str] = field(default_factory=list)
     image_hashes: list[str] = field(default_factory=list)
+    page_title: str = ""
+    page_description: str = ""
     failure_type: FailureType | None = None
     failure_detail: str | None = None
     duration_ms: float = 0

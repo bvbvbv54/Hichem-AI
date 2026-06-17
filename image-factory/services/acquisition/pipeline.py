@@ -11,12 +11,13 @@ from services.acquisition.http_client import HardenedHTTPClient
 from services.acquisition.detector import AntiBotDetector
 from services.acquisition.rate_limiter import DomainRateLimiter
 from services.acquisition.robots_checker import RobotsChecker
-from services.acquisition.image_extractor import extract_image_urls
+from services.acquisition.image_extractor import extract_image_urls, extract_page_title, extract_page_description
 from services.acquisition.image_downloader import ImageDownloader
 from services.acquisition.cache import ImageCache
 from services.acquisition.monitor import AcquisitionMonitor
 from services.acquisition.queue_manager import AcquisitionQueue
 from services.acquisition.browser_client import BrowserClient
+from services.acquisition.scrapfly_client import ScrapflyClient
 from services.pipeline.errors import PipelineError, ErrorCode, ErrorSeverity
 from services.admin_notifier import get_notifier
 
@@ -34,6 +35,7 @@ class AcquisitionPipeline:
         self.monitor = AcquisitionMonitor()
         self.queue = AcquisitionQueue()
         self.browser = BrowserClient()
+        self.scrapfly = ScrapflyClient()
         self._consecutive_blocks: dict[str, int] = {}
 
     async def run(self, job: AcquisitionJob) -> AcquisitionResult:
@@ -141,20 +143,33 @@ class AcquisitionPipeline:
 
         self._consecutive_blocks[domain] = 0
 
+        page_title = extract_page_title(html)
+        page_description = extract_page_description(html)
+
         image_urls = extract_image_urls(html, job.url)
         image_urls = image_urls[:job.max_images]
 
         if not image_urls:
-            result = AcquisitionResult(
-                job_id=job.job_id,
-                url=job.url,
-                success=False,
-                failure_type=FailureType.PAGE_STRUCTURE_CHANGED,
-                failure_detail="No image URLs found in page",
-                duration_ms=(time.monotonic() - start) * 1000,
-            )
-            await self.monitor.record(result)
-            return result
+            if settings.scrapfly_enabled:
+                logger.info("falling_back_to_scrapfly_no_images", url=job.url)
+                html = await self.scrapfly.fetch_page(job.url, render_js=True)
+                if html:
+                    image_urls = extract_image_urls(html, job.url)
+                    page_title = extract_page_title(html) or page_title
+                    page_description = extract_page_description(html) or page_description
+                    image_urls = image_urls[:job.max_images]
+
+            if not image_urls:
+                result = AcquisitionResult(
+                    job_id=job.job_id,
+                    url=job.url,
+                    success=False,
+                    failure_type=FailureType.PAGE_STRUCTURE_CHANGED,
+                    failure_detail="No image URLs found in page",
+                    duration_ms=(time.monotonic() - start) * 1000,
+                )
+                await self.monitor.record(result)
+                return result
 
         image_paths: list[str] = []
         image_hashes: list[str] = []
@@ -187,6 +202,8 @@ class AcquisitionPipeline:
             success=len(image_paths) > 0,
             image_paths=image_paths,
             image_hashes=image_hashes,
+            page_title=page_title,
+            page_description=page_description,
             required_browser=used_browser,
             was_cached=was_cached,
             duration_ms=duration_ms,
@@ -208,6 +225,11 @@ class AcquisitionPipeline:
         return result
 
     async def _fetch_page(self, url: str) -> tuple[str | None, bool, FailureType | None, str | None]:
+        if settings.use_browser_primary:
+            html = await self.browser.fetch_page(url)
+            if html:
+                return html, True, None, None
+
         try:
             response = await self.http_client.fetch_with_retry(url)
             elapsed = response.elapsed.total_seconds() * 1000
@@ -218,15 +240,34 @@ class AcquisitionPipeline:
                     if retry_after:
                         domain = urlparse(url).netloc
                         await self.rate_limiter.block_domain(domain, float(retry_after))
+                if failure in (FailureType.BOT_BLOCKED, FailureType.CAPTCHA) and not settings.use_browser_primary and settings.use_browser_fallback:
+                    logger.info("falling_back_to_browser", url=url)
+                    html = await self.browser.fetch_page(url)
+                    if html:
+                        return html, True, None, None
+                if failure in (FailureType.BOT_BLOCKED, FailureType.CAPTCHA) and settings.scrapfly_enabled:
+                    logger.info("falling_back_to_scrapfly", url=url)
+                    html = await self.scrapfly.fetch_page(url, render_js=True)
+                    if html:
+                        return html, False, None, None
+                    logger.info("falling_back_to_browser", url=url)
+                    html = await self.browser.fetch_page(url)
+                    if html:
+                        return html, True, None, None
                 return None, False, failure, f"Detected: {failure.value}"
             return response.text, False, None, None
         except Exception as exc:
             failure = self.detector.classify_exception(exc)
-            if failure == FailureType.BOT_BLOCKED and settings.use_browser_fallback:
+            if failure == FailureType.BOT_BLOCKED and not settings.use_browser_primary and settings.use_browser_fallback:
                 logger.info("falling_back_to_browser", url=url)
                 html = await self.browser.fetch_page(url)
                 if html:
                     return html, True, None, None
+            if settings.scrapfly_enabled and failure in (FailureType.BOT_BLOCKED, FailureType.CAPTCHA, FailureType.TIMEOUT):
+                logger.info("falling_back_to_scrapfly", url=url)
+                html = await self.scrapfly.fetch_page(url, render_js=True)
+                if html:
+                    return html, False, None, None
             return None, False, failure, str(exc)
 
     async def close(self) -> None:
@@ -237,3 +278,4 @@ class AcquisitionPipeline:
         await self.monitor.close()
         await self.queue.close()
         await self.browser.close()
+        await self.scrapfly.close()

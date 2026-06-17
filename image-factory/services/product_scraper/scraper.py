@@ -21,7 +21,7 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif"}
 ALI_CDN_PATTERN = re.compile(r"https?://[^\"'\s]*alicdn[^\"'\s]*\.(?:jpg|jpeg|png|webp)")
 MAX_IMAGES_PER_PRODUCT = 5
 MIN_IMAGE_DIMENSION = 200
-MIN_IMAGE_SIZE_BYTES = 10240
+MIN_IMAGE_SIZE_BYTES = int(settings.scraper_min_image_size_kb * 1024)
 SKIP_KEYWORDS = ["icon", "logo", "avatar", "favicon", "spacer", "banner", "thumb", "badge", "sprite", "bg_", "loading"]
 
 SITE_HANDLERS: dict[str, str] = {

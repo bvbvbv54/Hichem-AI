@@ -1,0 +1,36 @@
+{
+  "domain": "1688.com",
+  "name": "1688",
+  "selectors": {
+    "title": "h1[data-spm*='title'], .product-title, .detail-title",
+    "price": ".price, .product-price, .detail-price",
+    "description": ".detail-desc, .product-description",
+    "images": ".detail-gallery img, .product-gallery img, .tb-thumb img",
+    "attributes": ".product-params, .detail-params"
+  },
+  "json_paths": {
+    "title": "offerView.title, offerView.subject",
+    "price": "offerView.price, sku.price",
+    "images": "offerView.imageList, images",
+    "description": "offerView.description"
+  },
+  "api_endpoints": ["https://detail.1688.com/offer/{id}.html"],
+  "captcha_signatures": ["nc_login", "verify.1688.com", "slide-verify"],
+  "session_rules": {
+    "max_requests_per_session": 50,
+    "session_ttl_hours": 24,
+    "cooldown_minutes": 30
+  },
+  "request_rules": {
+    "max_concurrent": 2,
+    "delay_min": 4.0,
+    "delay_max": 8.0,
+    "backoff_strategy": "exponential"
+  },
+  "preferred_extraction_method": "embedded_json",
+  "extraction_success_rates": {
+    "json_ld": 0.02,
+    "embedded_json": 0.78,
+    "browser_automation": 0.20
+  }
+}
