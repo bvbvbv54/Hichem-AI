@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
+
+
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -146,6 +148,9 @@ async def get_product_detail(
     jobs = list(merged_jobs.values())
     jobs.sort(key=lambda j: j.created_at or datetime.min, reverse=True)
 
+    seen_scraped_paths: set[str] = set()
+    seen_generated_paths: set[str] = set()
+
     for job in jobs:
         assets_result = await session.execute(
             select(Asset).where(Asset.job_id == job.id).order_by(Asset.created_at)
@@ -153,11 +158,12 @@ async def get_product_detail(
         assets = list(assets_result.scalars().all())
 
         for asset in assets:
+            fp = asset.file_path or ""
             img_info = {
                 "id": asset.id,
                 "job_id": asset.job_id,
                 "filename": asset.filename,
-                "file_path": asset.file_path,
+                "file_path": fp,
                 "file_size": asset.file_size,
                 "mime_type": asset.mime_type,
                 "width": asset.width,
@@ -166,7 +172,13 @@ async def get_product_detail(
                 "created_at": asset.created_at.isoformat() if asset.created_at else None,
             }
             meta = asset.meta or {}
-            if meta.get("type") == "scraped" or "scraped" in (asset.filename or ""):
+            is_scraped = meta.get("type") == "scraped" or "scraped" in (asset.filename or "")
+            target_set = seen_scraped_paths if is_scraped else seen_generated_paths
+            if fp and fp in target_set:
+                continue
+            if fp:
+                target_set.add(fp)
+            if is_scraped:
                 scraped_images.append(img_info)
             else:
                 generated_images.append(img_info)
@@ -175,6 +187,9 @@ async def get_product_detail(
         job_meta = job.meta or {}
         saved = job_meta.get("saved_assets", [])
         for img_path in saved:
+            if img_path in seen_scraped_paths:
+                continue
+            seen_scraped_paths.add(img_path)
             img_id = hashlib.sha256(img_path.encode()).hexdigest()[:12]
             scraped_images.append({
                 "id": img_id,

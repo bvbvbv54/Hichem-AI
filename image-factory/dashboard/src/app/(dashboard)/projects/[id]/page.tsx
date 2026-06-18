@@ -113,33 +113,22 @@ export default function ProjectDetailPage() {
                 <Card key={product.id}>
                   <CardContent className="p-4">
                     <div className="flex items-start justify-between gap-4">
-                      <div className="flex items-start gap-3 flex-1 min-w-0">
-                        {statusIcon(product.status)}
-                        <div className="min-w-0">
-                          <p className="font-medium truncate">{product.url || "No URL"}</p>
-                          {product.generated_title && (
-                            <p className="text-sm text-muted-foreground truncate">{product.generated_title}</p>
+                      {statusIcon(product.status)}
+                      <div className="min-w-0 flex-1">
+                        <p className="font-medium truncate">{product.generated_title || product.url || "No URL"}</p>
+                        <div className="flex items-center gap-3 mt-1">
+                          <Badge variant="outline" className="text-xs">
+                            {statusLabel(product.status)}
+                          </Badge>
+                          <span className="text-xs text-muted-foreground">{formatDateTime(product.created_at)}</span>
+                          {product.scraped_image_count > 0 && (
+                            <span className="text-xs text-muted-foreground">{product.scraped_image_count} images</span>
                           )}
-                          <div className="flex items-center gap-3 mt-1">
-                            <Badge variant="outline" className="text-xs">
-                              {statusLabel(product.status)}
-                            </Badge>
-                            <span className="text-xs text-muted-foreground">{formatDateTime(product.created_at)}</span>
-                          </div>
                         </div>
                       </div>
-                      {product.images?.length > 0 && (
-                        <div className="flex gap-1">
-                          {product.images.slice(0, 3).map((img: any) => (
-                            <img
-                              key={img.id}
-                              src={`/api/v1/assets/${img.id}/file`}
-                              alt=""
-                              className="h-12 w-12 rounded object-cover border"
-                            />
-                          ))}
-                        </div>
-                      )}
+                      <Link href={`/content/${product.id}`}>
+                        <Button variant="outline" size="sm">View</Button>
+                      </Link>
                     </div>
                   </CardContent>
                 </Card>

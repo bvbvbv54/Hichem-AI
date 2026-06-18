@@ -149,14 +149,20 @@ async def get_project_products(
 
     for link in links:
         images = []
+        seen_paths: set[str] = set()
         if link.job_id:
             assets_result = await session.execute(select(Asset).where(Asset.job_id == link.job_id))
             assets = assets_result.scalars().all()
             for a in assets:
+                fp = a.file_path or ""
+                if fp and fp in seen_paths:
+                    continue
+                if fp:
+                    seen_paths.add(fp)
                 images.append({
                     "id": a.id,
                     "filename": a.filename,
-                    "file_path": a.file_path,
+                    "file_path": fp,
                     "created_at": a.created_at.isoformat() if a.created_at else "",
                 })
             job_result = await session.execute(select(Job).where(Job.id == link.job_id))
@@ -164,6 +170,9 @@ async def get_project_products(
             if job and job.meta:
                 saved = job.meta.get("saved_assets", [])
                 for img_path in saved:
+                    if img_path in seen_paths:
+                        continue
+                    seen_paths.add(img_path)
                     img_id = hashlib.sha256(img_path.encode()).hexdigest()[:12]
                     images.append({
                         "id": img_id,
