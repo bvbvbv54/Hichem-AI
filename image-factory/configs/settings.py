@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     scraper_alert_threshold: float = 0.5
     scraper_max_concurrent: int = 5
     scraper_cache_ttl_days: int = 7
-    use_browser_fallback: bool = False
+    use_browser_fallback: bool = True
     use_browser_primary: bool = False
     playwright_headless: bool = True
     model_config = SettingsConfigDict(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import time
 from urllib.parse import urlparse
 
@@ -22,6 +23,40 @@ from services.pipeline.errors import PipelineError, ErrorCode, ErrorSeverity
 from services.admin_notifier import get_notifier
 
 logger = get_logger(__name__)
+
+
+_ALI_THUMB_RE = re.compile(
+    r"^(.*?\.(?:jpg|jpeg|png|webp|avif|gif))[._]_\d+x\d+\w*\..*$",
+    re.I,
+)
+
+
+def _normalize_image_url(url: str) -> str:
+    qs_idx = url.find("?")
+    path_part = url[:qs_idx] if qs_idx > -1 else url
+    m = _ALI_THUMB_RE.match(path_part)
+    if m:
+        base = m.group(1)
+        return base + (url[qs_idx:] if qs_idx > -1 else "")
+
+    m = re.match(r"^(https?://[^/]+(?:/[^/]+)*?)/\d+x\d+\.(?:jpg|jpeg|png|webp|gif|avif)$", url, re.I)
+    if m:
+        base = m.group(1)
+        ext = url.rsplit(".", 1)[-1]
+        return f"{base}.{ext}"
+
+    stripped = re.sub(r"\.slim\.\w+(?:\?.*)?$", "", url, re.I)
+    if stripped != url:
+        return stripped.split("?")[0]
+
+    cleaned = re.sub(r"[?&]x-oss-process[^&]*", "", url)
+    if cleaned != url:
+        return cleaned.rstrip("?")
+
+    if ".jpg_.webp" in url or ".jpg_.avif" in url or ".jpg_.png" in url:
+        return url.replace(".jpg_.webp", ".jpg").replace(".jpg_.avif", ".jpg").replace(".jpg_.png", ".jpg")
+
+    return url
 
 
 class AcquisitionPipeline:
@@ -85,7 +120,7 @@ class AcquisitionPipeline:
 
         await self.rate_limiter.acquire(domain)
 
-        html, used_browser, failure_type, failure_detail = await self._fetch_page(job.url)
+        html, used_browser, api_images, failure_type, failure_detail = await self._fetch_page(job.url)
 
         if failure_type and failure_detail:
             if failure_type in (FailureType.BOT_BLOCKED, FailureType.CAPTCHA):
@@ -147,29 +182,73 @@ class AcquisitionPipeline:
         page_description = extract_page_description(html)
 
         image_urls = extract_image_urls(html, job.url)
+        image_urls = [_normalize_image_url(u) for u in image_urls]
+        image_urls = list(dict.fromkeys(image_urls))
+        if api_images:
+            normalized_api = [_normalize_image_url(u) for u in api_images]
+            for u in normalized_api:
+                if u not in image_urls:
+                    image_urls.append(u)
         image_urls = image_urls[:job.max_images]
 
         if not image_urls:
             if settings.scrapfly_enabled:
-                logger.info("falling_back_to_scrapfly_no_images", url=job.url)
-                html = await self.scrapfly.fetch_page(job.url, render_js=True)
-                if html:
-                    image_urls = extract_image_urls(html, job.url)
-                    page_title = extract_page_title(html) or page_title
-                    page_description = extract_page_description(html) or page_description
+                logger.info("falling_back_to_scrapfly", url=job.url)
+                sf_html = await self.scrapfly.fetch_page(job.url, render_js=True)
+                if sf_html:
+                    sf_urls = extract_image_urls(sf_html, job.url)
+                    image_urls = [_normalize_image_url(u) for u in sf_urls]
+                    page_title = extract_page_title(sf_html) or page_title
+                    page_description = extract_page_description(sf_html) or page_description
                     image_urls = image_urls[:job.max_images]
 
-            if not image_urls:
-                result = AcquisitionResult(
-                    job_id=job.job_id,
-                    url=job.url,
-                    success=False,
-                    failure_type=FailureType.PAGE_STRUCTURE_CHANGED,
-                    failure_detail="No image URLs found in page",
-                    duration_ms=(time.monotonic() - start) * 1000,
-                )
-                await self.monitor.record(result)
-                return result
+        if not image_urls and not used_browser and settings.use_browser_fallback:
+            logger.info("falling_back_to_browser", url=job.url)
+            browser_html, api_images = await self.browser.fetch_page_with_api(job.url)
+            if browser_html:
+                browser_urls = extract_image_urls(browser_html, job.url)
+                browser_urls = [_normalize_image_url(u) for u in browser_urls]
+                browser_urls = list(dict.fromkeys(browser_urls))
+                if api_images:
+                    normalized_api = [_normalize_image_url(u) for u in api_images]
+                    browser_urls.extend(normalized_api)
+                    browser_urls = list(dict.fromkeys(browser_urls))
+                if browser_urls:
+                    image_urls = browser_urls[:job.max_images]
+                    used_browser = True
+                    page_title = extract_page_title(browser_html) or page_title
+                    page_description = extract_page_description(browser_html) or page_description
+
+        if used_browser and settings.scrapfly_enabled and image_urls:
+            logger.info("enriching_from_scrapfly", url=job.url)
+            sf_html = await self.scrapfly.fetch_page(job.url, render_js=True)
+            if sf_html:
+                sf_urls = extract_image_urls(sf_html, job.url)
+                sf_urls = [_normalize_image_url(u) for u in sf_urls]
+                existing = set(image_urls)
+                for u in sf_urls:
+                    if u not in existing:
+                        existing.add(u)
+                        image_urls.append(u)
+                image_urls = image_urls[:job.max_images]
+
+        if not image_urls and "temu.com" in job.url:
+            logger.info("falling_back_to_temu_api", url=job.url)
+            temu_urls = await _fetch_temu_images(job.url)
+            if temu_urls:
+                image_urls = temu_urls[:job.max_images]
+
+        if not image_urls:
+            result = AcquisitionResult(
+                job_id=job.job_id,
+                url=job.url,
+                success=False,
+                failure_type=FailureType.PAGE_STRUCTURE_CHANGED,
+                failure_detail="No image URLs found in page",
+                duration_ms=(time.monotonic() - start) * 1000,
+            )
+            await self.monitor.record(result)
+            return result
 
         image_paths: list[str] = []
         image_hashes: list[str] = []
@@ -224,11 +303,11 @@ class AcquisitionPipeline:
         logger.info("pipeline_complete", job_id=job.job_id, images=len(image_paths), duration_ms=duration_ms)
         return result
 
-    async def _fetch_page(self, url: str) -> tuple[str | None, bool, FailureType | None, str | None]:
+    async def _fetch_page(self, url: str) -> tuple[str | None, bool, list[str], FailureType | None, str | None]:
         if settings.use_browser_primary:
-            html = await self.browser.fetch_page(url)
+            html, api_images = await self.browser.fetch_page_with_api(url)
             if html:
-                return html, True, None, None
+                return html, True, api_images, None, None
 
         try:
             response = await self.http_client.fetch_with_retry(url)
@@ -242,33 +321,33 @@ class AcquisitionPipeline:
                         await self.rate_limiter.block_domain(domain, float(retry_after))
                 if failure in (FailureType.BOT_BLOCKED, FailureType.CAPTCHA) and not settings.use_browser_primary and settings.use_browser_fallback:
                     logger.info("falling_back_to_browser", url=url)
-                    html = await self.browser.fetch_page(url)
+                    html, api_images = await self.browser.fetch_page_with_api(url)
                     if html:
-                        return html, True, None, None
+                        return html, True, api_images, None, None
                 if failure in (FailureType.BOT_BLOCKED, FailureType.CAPTCHA) and settings.scrapfly_enabled:
                     logger.info("falling_back_to_scrapfly", url=url)
                     html = await self.scrapfly.fetch_page(url, render_js=True)
                     if html:
-                        return html, False, None, None
+                        return html, False, [], None, None
                     logger.info("falling_back_to_browser", url=url)
-                    html = await self.browser.fetch_page(url)
+                    html, api_images = await self.browser.fetch_page_with_api(url)
                     if html:
-                        return html, True, None, None
-                return None, False, failure, f"Detected: {failure.value}"
-            return response.text, False, None, None
+                        return html, True, api_images, None, None
+                return None, False, [], failure, f"Detected: {failure.value}"
+            return response.text, False, [], None, None
         except Exception as exc:
             failure = self.detector.classify_exception(exc)
             if failure == FailureType.BOT_BLOCKED and not settings.use_browser_primary and settings.use_browser_fallback:
                 logger.info("falling_back_to_browser", url=url)
-                html = await self.browser.fetch_page(url)
+                html, api_images = await self.browser.fetch_page_with_api(url)
                 if html:
-                    return html, True, None, None
+                    return html, True, api_images, None, None
             if settings.scrapfly_enabled and failure in (FailureType.BOT_BLOCKED, FailureType.CAPTCHA, FailureType.TIMEOUT):
                 logger.info("falling_back_to_scrapfly", url=url)
                 html = await self.scrapfly.fetch_page(url, render_js=True)
                 if html:
-                    return html, False, None, None
-            return None, False, failure, str(exc)
+                    return html, False, [], None, None
+            return None, False, [], failure, str(exc)
 
     async def close(self) -> None:
         await self.http_client.close()
@@ -279,3 +358,54 @@ class AcquisitionPipeline:
         await self.queue.close()
         await self.browser.close()
         await self.scrapfly.close()
+
+
+_TEMU_GOODS_ID_RE = re.compile(r"g-(\d{12,})")
+_TEMU_API_URL = "https://www.temu.com/api/oak/integration/render"
+
+
+async def _fetch_temu_images(page_url: str) -> list[str]:
+    m = _TEMU_GOODS_ID_RE.search(page_url)
+    if not m:
+        m = re.search(r"goods_id[=\\\/](\d{12,})", page_url)
+    goods_id = m.group(1) if m else None
+    if not goods_id:
+        return []
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
+            resp = await client.get(
+                _TEMU_API_URL,
+                params={"goods_id": goods_id, "client": "PC"},
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/125.0.0.0",
+                    "Accept": "application/json",
+                },
+            )
+            if resp.status_code != 200:
+                return []
+            data = resp.json()
+            goods = data.get("goods", data)
+            if not goods or not isinstance(goods, dict):
+                goods = data.get("result", {})
+            if not goods or not isinstance(goods, dict):
+                return []
+            urls: list[str] = []
+            hd_thumb = goods.get("hd_thumb_url", "")
+            if hd_thumb and hd_thumb.startswith("http"):
+                urls.append(hd_thumb)
+            for field in ("gallery_urls", "goods_gallery", "images", "specs"):
+                field_val = goods.get(field, [])
+                if isinstance(field_val, list):
+                    for item in field_val:
+                        if isinstance(item, str) and item.startswith("http"):
+                            urls.append(item)
+                        elif isinstance(item, dict):
+                            for key in ("url", "src", "image", "hd_url"):
+                                val = item.get(key, "")
+                                if val and isinstance(val, str) and val.startswith("http"):
+                                    urls.append(val)
+            return urls
+    except Exception:
+        return []

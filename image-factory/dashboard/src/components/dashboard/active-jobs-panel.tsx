@@ -56,7 +56,7 @@ function JobRow({ job }: { job: ActiveJob }) {
           <StatusBadge status={job.status} />
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <span className="text-[10px] text-muted-foreground">{job.num_images} img</span>
+          <span className="text-[10px] text-muted-foreground">{job.num_images} found</span>
           {expanded ? <ChevronUp className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />}
         </div>
       </div>

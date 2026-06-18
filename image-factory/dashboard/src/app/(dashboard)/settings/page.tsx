@@ -18,12 +18,26 @@ import { Key, Cloud, RefreshCw, Trash2, Eye, EyeOff, CheckCircle2, XCircle, Save
 function DriveCredentialsSection() {
   const [jsonInput, setJsonInput] = useState("");
   const [testStatus, setTestStatus] = useState<"idle" | "testing" | "ok" | "fail">("idle");
+  const [dirName, setDirName] = useState("");
+  const [savingDir, setSavingDir] = useState(false);
   const queryClient = useQueryClient();
 
   const { data: creds, isLoading: credsLoading, refetch: refetchCreds } = useQuery({
     queryKey: ["drive-credentials"],
     queryFn: () => api.getDriveCredentials(),
   });
+
+  const { data: driveConfig } = useQuery({
+    queryKey: ["drive-config"],
+    queryFn: () => api.getDriveConfig(),
+    enabled: !!creds?.configured,
+  });
+
+  useEffect(() => {
+    if (driveConfig?.root_folder) {
+      setDirName(driveConfig.root_folder);
+    }
+  }, [driveConfig]);
 
   const saveMutation = useMutation({
     mutationFn: () => api.saveDriveCredentials(jsonInput),
@@ -42,6 +56,7 @@ function DriveCredentialsSection() {
     mutationFn: () => api.disconnectDrive(),
     onSuccess: () => {
       toast({ title: "Credentials removed" });
+      setTestStatus("idle");
       refetchCreds();
       queryClient.invalidateQueries({ queryKey: ["drive-status"] });
     },
@@ -51,12 +66,22 @@ function DriveCredentialsSection() {
     mutationFn: () => api.testDriveConnection(),
     onSuccess: () => {
       setTestStatus("ok");
-      setTimeout(() => setTestStatus("idle"), 3000);
     },
     onError: (err: Error) => {
       setTestStatus("fail");
       toast({ title: "Connection failed", description: err.message, variant: "destructive" });
       setTimeout(() => setTestStatus("idle"), 5000);
+    },
+  });
+
+  const saveDirMutation = useMutation({
+    mutationFn: (name: string) => api.updateDriveConfig({ root_folder: name }),
+    onSuccess: () => {
+      toast({ title: "Directory name saved" });
+      queryClient.invalidateQueries({ queryKey: ["drive-config"] });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Failed to save directory", description: err.message, variant: "destructive" });
     },
   });
 
@@ -75,13 +100,23 @@ function DriveCredentialsSection() {
           {creds?.client_email && (
             <p className="text-xs text-muted-foreground font-mono">{creds.client_email}</p>
           )}
+          {testStatus === "ok" && (
+            <p className="text-xs text-green-600 font-medium flex items-center gap-1">
+              <CheckCircle2 className="h-3 w-3" /> Connected
+            </p>
+          )}
+          {testStatus === "fail" && (
+            <p className="text-xs text-red-500 font-medium flex items-center gap-1">
+              <XCircle className="h-3 w-3" /> Connection failed
+            </p>
+          )}
         </div>
         <div className="flex gap-2">
           {creds?.configured && (
             <>
               <Button variant="outline" size="sm" onClick={() => testMutation.mutate()} disabled={testMutation.isPending}>
-                {testStatus === "ok" ? <CheckCircle2 className="h-4 w-4 mr-1 text-green-500" /> :
-                 testStatus === "fail" ? <XCircle className="h-4 w-4 mr-1 text-red-500" /> :
+                {testMutation.isPending ? <RefreshCw className="h-4 w-4 mr-1 animate-spin" /> :
+                 testStatus === "ok" ? <CheckCircle2 className="h-4 w-4 mr-1 text-green-500" /> :
                  <RefreshCw className="h-4 w-4 mr-1" />}
                 Test
               </Button>
@@ -92,6 +127,34 @@ function DriveCredentialsSection() {
           )}
         </div>
       </div>
+
+      {testStatus === "ok" && (
+        <div className="space-y-3 rounded-lg border border-green-500/30 bg-green-500/5 p-4">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="h-4 w-4 text-green-500" />
+            <span className="text-sm font-medium text-green-600">Connected successfully</span>
+          </div>
+          <div className="space-y-2">
+            <Label>Directory Name</Label>
+            <p className="text-xs text-muted-foreground">Images will be saved under this directory on Google Drive: <span className="font-mono">{dirName || "ImageFactory Outputs"}/{`{product-name}`}/scraped/</span></p>
+            <div className="flex gap-2">
+              <Input
+                placeholder="My Image Factory"
+                value={dirName}
+                onChange={(e) => setDirName(e.target.value)}
+                className="flex-1"
+              />
+              <Button
+                onClick={() => saveDirMutation.mutate(dirName)}
+                disabled={!dirName.trim() || saveDirMutation.isPending}
+                size="sm"
+              >
+                <Save className="h-4 w-4 mr-1" /> Save
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {!creds?.configured && (
         <div className="space-y-3">
@@ -156,6 +219,7 @@ function MonthlyBudgetSection() {
       if (!res.ok) throw new Error(await res.text());
       toast({ title: "Budget updated", description: `Monthly budget set to $${(cents / 100).toFixed(2)}` });
       queryClient.invalidateQueries({ queryKey: ["monthly-budget"] });
+      queryClient.invalidateQueries({ queryKey: ["ai-limiter"] });
     } catch (err: any) {
       toast({ title: "Failed to update budget", description: err.message, variant: "destructive" });
     } finally {
@@ -406,18 +470,15 @@ function ScrapflyUsageSection() {
   const total = usage?.total_cost ?? 0;
   const remaining = usage?.remaining_credits ?? 0;
   const budget = usage?.monthly_budget ?? 3000;
-  const budgetLeft = usage?.budget_left ?? budget;
-  const possible = usage?.products_possible ?? 0;
   const pct = budget > 0 ? Math.round((total / budget) * 100) : 0;
   const keyCount = usage?.key_count ?? 0;
   const scrapesBudget = usage?.scrapes_remaining_budget ?? 0;
-  const scrapesActual = usage?.scrapes_remaining_actual ?? 0;
   const avgCost = usage?.avg_cost_per_request ?? 9;
   const costPerProduct = usage?.cost_per_product ?? 9;
 
   return (
     <div className="space-y-3">
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-center">
         <div className="rounded-lg border p-3">
           <p className="text-2xl font-bold">{total}</p>
           <p className="text-xs text-muted-foreground">Credits used</p>
@@ -425,10 +486,6 @@ function ScrapflyUsageSection() {
         <div className="rounded-lg border p-3">
           <p className="text-2xl font-bold">{remaining}</p>
           <p className="text-xs text-muted-foreground">Credits remaining</p>
-        </div>
-        <div className="rounded-lg border p-3">
-          <p className="text-2xl font-bold">{scrapesActual}</p>
-          <p className="text-xs text-muted-foreground">Scrapes left (actual)</p>
         </div>
         <div className="rounded-lg border p-3">
           <p className="text-2xl font-bold">{scrapesBudget}</p>

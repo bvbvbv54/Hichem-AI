@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuthStore, useAuthHydrated, useNotificationsStore } from "@/lib/store";
 import { Sidebar } from "@/components/shared/sidebar";
@@ -18,7 +18,7 @@ function DashboardContent({ children }: { children: React.ReactNode }) {
   // Initialize SSE connection (non-blocking)
   useSSE();
 
-  useSSEEvent("job_update", () => {
+  const invalidateAll = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["dashboard-stats"] });
     queryClient.invalidateQueries({ queryKey: ["system-status"] });
     queryClient.invalidateQueries({ queryKey: ["queue-info"] });
@@ -28,6 +28,41 @@ function DashboardContent({ children }: { children: React.ReactNode }) {
     queryClient.invalidateQueries({ queryKey: ["assets"] });
     queryClient.invalidateQueries({ queryKey: ["admin-stats"] });
     queryClient.invalidateQueries({ queryKey: ["notifications"] });
+    queryClient.invalidateQueries({ queryKey: ["active-jobs"] });
+    queryClient.invalidateQueries({ queryKey: ["content-stats"] });
+    queryClient.invalidateQueries({ queryKey: ["content-products"] });
+    queryClient.invalidateQueries({ queryKey: ["product-detail"] });
+    queryClient.invalidateQueries({ queryKey: ["scrapfly-usage"] });
+    queryClient.invalidateQueries({ queryKey: ["ai-limiter"] });
+    queryClient.invalidateQueries({ queryKey: ["captcha-intel"] });
+    queryClient.invalidateQueries({ queryKey: ["drive-credentials"] });
+    queryClient.invalidateQueries({ queryKey: ["drive-config"] });
+    queryClient.invalidateQueries({ queryKey: ["monthly-budget"] });
+    queryClient.invalidateQueries({ queryKey: ["provider-keys"] });
+    queryClient.invalidateQueries({ queryKey: ["img2img-config"] });
+    queryClient.invalidateQueries({ queryKey: ["storage-config"] });
+    queryClient.invalidateQueries({ queryKey: ["scrapfly-keys"] });
+  }, [queryClient]);
+
+  useSSEEvent("job_stage_changed", invalidateAll);
+  useSSEEvent("job_completed", invalidateAll);
+  useSSEEvent("job_failed", invalidateAll);
+  useSSEEvent("batch_progress", invalidateAll);
+  useSSEEvent("acquisition_alert", invalidateAll);
+  useSSEEvent("system_alert", invalidateAll);
+  useSSEEvent("drive_saved", (data) => {
+    invalidateAll();
+    const ns = useNotificationsStore.getState();
+    const productName = data.product_name || data.data?.product_name || "Product";
+    const fileCount = data.file_count || data.data?.file_count || 0;
+    ns.addNotification({
+      id: `drive-${Date.now()}`,
+      type: "drive_saved",
+      title: "Drive: Images Saved",
+      message: `${fileCount} image${fileCount !== 1 ? "s" : ""} for '${productName}' uploaded to Google Drive`,
+      read: false,
+      created_at: new Date().toISOString(),
+    });
   });
 
   useSSEEvent("notification", (data) => {

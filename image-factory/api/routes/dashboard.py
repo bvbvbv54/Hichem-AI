@@ -256,9 +256,9 @@ async def get_captcha_intelligence(redis: aioredis.Redis = Depends(get_redis)):
         for key in keys:
             k = key.decode() if isinstance(key, bytes) else key
             parts = k.split(":")
-            if len(parts) >= 4:
-                domain = parts[3]
-                day = parts[4] if len(parts) >= 5 else ""
+            if len(parts) >= 3:
+                domain = parts[2]
+                day = parts[3] if len(parts) >= 4 else ""
                 domains_seen.add(domain)
         if cursor == 0:
             break

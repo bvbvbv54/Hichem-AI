@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { CheckCheck, Bell, BellOff, CheckCircle2, XCircle, Loader2, ArrowLeft } from "lucide-react";
+import { CheckCheck, Bell, BellOff, CheckCircle2, XCircle, Loader2, ArrowLeft, Cloud } from "lucide-react";
 import { formatDateTime, statusLabel } from "@/lib/utils";
 import Link from "next/link";
 
@@ -18,6 +18,7 @@ const typeIcons: Record<string, any> = {
   project_completed: CheckCircle2,
   generation_failed: XCircle,
   delivery_completed: CheckCircle2,
+  drive_saved: Cloud,
 };
 
 const typeColors: Record<string, string> = {
@@ -27,6 +28,7 @@ const typeColors: Record<string, string> = {
   project_completed: "text-success",
   generation_failed: "text-destructive",
   delivery_completed: "text-cyan-500",
+  drive_saved: "text-green-500",
 };
 
 export default function NotificationsPage() {

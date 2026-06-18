@@ -28,6 +28,9 @@ RUN apt-get update -qq --allow-insecure-repositories 2>/dev/null || true; \
 COPY requirements/ requirements/
 RUN pip install --no-cache-dir --retries 5 --default-timeout 120 -r requirements/worker.txt
 
+# Install Playwright and Chromium browser
+RUN playwright install chromium 2>&1 && playwright install-deps chromium 2>&1 || true
+
 COPY . .
 
 CMD ["celery", "-A", "workers.celery_app", "worker", "--loglevel=info", "--concurrency=4"]

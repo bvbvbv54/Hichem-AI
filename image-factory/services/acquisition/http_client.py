@@ -95,6 +95,10 @@ class HardenedHTTPClient:
                 self.client.cookies.set(key, value, domain=domain)
         if proxy:
             kwargs["proxy"] = proxy
+        elif settings.request_delay_enabled:
+            delay = random.uniform(3.0, 6.0)
+            logger.debug("no_proxy_extra_delay", delay_seconds=round(delay, 2))
+            await asyncio.sleep(delay)
         response = await self.client.get(url, **kwargs)
         for cookie in self.client.cookies.jar:
             if cookie.domain and domain in cookie.domain:

@@ -226,6 +226,24 @@ class GoogleDriveManager:
         result = await asyncio.to_thread(_execute)
         return result.get("files", [])
 
+    async def use_service_account(self, sa_path: str | Path) -> bool:
+        from google.oauth2 import service_account
+        sa_path = Path(sa_path)
+        if not sa_path.exists():
+            logger.warning("service_account_file_not_found", path=str(sa_path))
+            return False
+        try:
+            creds = service_account.Credentials.from_service_account_file(
+                str(sa_path),
+                scopes=["https://www.googleapis.com/auth/drive.file"]
+            )
+            self._creds = creds
+            self._service = await asyncio.to_thread(build, "drive", "v3", credentials=creds)
+            return True
+        except Exception as e:
+            logger.error("service_account_auth_failed", error=str(e))
+            return False
+
     async def close(self) -> None:
         if self._redis:
             await self._redis.aclose()

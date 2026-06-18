@@ -249,7 +249,7 @@ export default function DashboardPage() {
               <>
                 <div className="flex items-baseline gap-1">
                   <span className="text-2xl font-bold">${aiLimiter.usage_dollars}</span>
-                  <span className="text-xs text-muted-foreground">of $${aiLimiter.monthly_budget_dollars}</span>
+                  <span className="text-xs text-muted-foreground">of ${aiLimiter.monthly_budget_dollars}</span>
                 </div>
                 <div className="w-full bg-muted rounded-full h-2 mt-2">
                   <div className={`h-2 rounded-full transition-all ${
@@ -261,15 +261,6 @@ export default function DashboardPage() {
                   <span>${aiLimiter.remaining_dollars} left</span>
                   <span>{aiLimiter.usage_percent}% used</span>
                 </div>
-                <p className="text-xs text-muted-foreground mt-1">
-                  {aiLimiter.total_images_this_month} images &middot; ${aiLimiter.cost_per_image_dollars}/img
-                </p>
-                {aiLimiter.low_credits && (
-                  <p className="text-xs text-amber-500 font-medium mt-1">Low budget remaining</p>
-                )}
-                {aiLimiter.critical_credits && (
-                  <p className="text-xs text-rose-500 font-medium mt-1">Critically low - generation may stop</p>
-                )}
               </>
             ) : (
               <p className="text-xs text-muted-foreground">Budget data unavailable</p>

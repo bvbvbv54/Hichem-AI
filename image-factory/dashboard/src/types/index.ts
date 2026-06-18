@@ -187,7 +187,8 @@ export interface Notification {
     | "processing_finished"
     | "project_completed"
     | "generation_failed"
-    | "delivery_completed";
+    | "delivery_completed"
+    | "drive_saved";
   title: string;
   message: string;
   read: boolean;

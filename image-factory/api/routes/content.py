@@ -24,6 +24,8 @@ from services.translation_service import batch_translate, contains_chinese
 
 logger = get_logger(__name__)
 
+from PIL import Image as PILImage
+
 router = APIRouter(prefix="/content", tags=["Content"])
 
 
@@ -150,6 +152,7 @@ async def get_product_detail(
 
     seen_scraped_paths: set[str] = set()
     seen_generated_paths: set[str] = set()
+    seen_scraped_content: set[tuple] = set()
 
     for job in jobs:
         assets_result = await session.execute(
@@ -159,6 +162,11 @@ async def get_product_detail(
 
         for asset in assets:
             fp = asset.file_path or ""
+            content_key = (asset.width, asset.height, asset.file_size)
+            if content_key[0] and content_key[1] and content_key[0] >= 200:
+                if content_key in seen_scraped_content:
+                    continue
+                seen_scraped_content.add(content_key)
             img_info = {
                 "id": asset.id,
                 "job_id": asset.job_id,
@@ -249,3 +257,95 @@ async def retry_content_product(
         celery_app.send_task("tasks.product.process_single_product", args=[link.job_id, link.url, link.project_id])
 
     return {"status": "retrying", "product_id": product_id, "url": link.url}
+
+
+@router.post("/products/{product_id}/dedup")
+async def dedup_product_images(
+    product_id: str,
+    session: AsyncSession = Depends(get_session),
+):
+    result = await session.execute(select(ProductLink).where(ProductLink.id == product_id))
+    link = result.scalar_one_or_none()
+    if not link:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    jobs_result = await session.execute(
+        select(Job).where(Job.meta["url"].as_string() == link.url).order_by(desc(Job.created_at))
+    )
+    all_jobs = list(jobs_result.scalars().all())
+    if link.job_id:
+        direct = await session.execute(select(Job).where(Job.id == link.job_id))
+        dj = direct.scalar_one_or_none()
+        if dj:
+            all_jobs.append(dj)
+
+    seen_content: dict[tuple, int] = {}
+    deleted_count = 0
+    kept_count = 0
+    deleted_paths: list[str] = []
+    asset_ids_to_delete: list[str] = []
+
+    for job in all_jobs:
+        assets_result = await session.execute(
+            select(Asset).where(Asset.job_id == job.id).order_by(Asset.created_at)
+        )
+        assets = list(assets_result.scalars().all())
+
+        for asset in assets:
+            fp = asset.file_path or ""
+            fpath = Path(fp)
+            if not fpath.exists():
+                continue
+            fsize = fpath.stat().st_size
+            try:
+                with PILImage.open(fp) as img:
+                    content_key = (img.width, img.height, fsize)
+            except Exception:
+                content_key = (0, 0, fsize)
+
+            if content_key in seen_content:
+                fpath.unlink(missing_ok=True)
+                asset_ids_to_delete.append(asset.id)
+                deleted_paths.append(fp)
+                deleted_count += 1
+            else:
+                seen_content[content_key] = 1
+                kept_count += 1
+
+        # Also check job meta saved_assets
+        job_meta = job.meta or {}
+        saved = job_meta.get("saved_assets", [])
+        for meta_path in saved:
+            if meta_path in deleted_paths:
+                continue
+            mp = Path(meta_path)
+            if not mp.exists():
+                continue
+            fsize = mp.stat().st_size
+            try:
+                with PILImage.open(str(mp)) as img:
+                    content_key = (img.width, img.height, fsize)
+            except Exception:
+                content_key = (0, 0, fsize)
+            if content_key in seen_content:
+                mp.unlink(missing_ok=True)
+                deleted_paths.append(meta_path)
+                deleted_count += 1
+            else:
+                seen_content[content_key] = 1
+                kept_count += 1
+
+    # Delete duplicate assets from DB
+    if asset_ids_to_delete:
+        from sqlalchemy import delete as sql_delete
+        await session.execute(
+            sql_delete(Asset).where(Asset.id.in_(asset_ids_to_delete))
+        )
+        await session.commit()
+
+    return {
+        "product_id": product_id,
+        "dedup_deleted": deleted_count,
+        "kept": kept_count,
+        "deleted_asset_ids": asset_ids_to_delete,
+    }

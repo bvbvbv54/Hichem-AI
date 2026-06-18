@@ -62,6 +62,7 @@ def create_app() -> FastAPI:
     from api.routes.content import router as content_router
     from api.routes.credits import router as credits_router
     from api.routes.scrapfly_admin_page import router as scrapfly_page_router
+    from api.routes.notifications import router as notifications_router
 
     app.include_router(health_router, prefix="/api/v1")
     app.include_router(generation_router, prefix="/api/v1")
@@ -82,6 +83,7 @@ def create_app() -> FastAPI:
     app.include_router(content_router, prefix="/api/v1")
     app.include_router(credits_router, prefix="/api/v1")
     app.include_router(scrapfly_page_router, prefix="/api/v1")
+    app.include_router(notifications_router, prefix="/api/v1")
 
     return app
 

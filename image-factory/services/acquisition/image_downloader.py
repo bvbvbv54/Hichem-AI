@@ -15,7 +15,7 @@ from services.acquisition.http_client import HardenedHTTPClient
 
 logger = get_logger(__name__)
 
-VALID_MIME_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+VALID_MIME_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif", "image/avif"}
 
 MIN_SIZE = int(settings.scraper_min_image_size_kb * 1024)
 MAX_SIZE = 50 * 1024 * 1024
@@ -55,6 +55,11 @@ class ImageDownloader:
             try:
                 img = Image.open(io.BytesIO(data))
                 img.verify()
+                img = Image.open(io.BytesIO(data))
+                img.load()
+                if img.width < 200 or img.height < 200:
+                    logger.warning("image_too_small_dimensions", url=url, dims=(img.width, img.height))
+                    return None, None
             except Exception as exc:
                 logger.warning("image_verification_failed", url=url, error=str(exc))
                 return None, None
@@ -103,4 +108,5 @@ def _ext_from_mime(mime: str) -> str:
         "image/png": ".png",
         "image/webp": ".webp",
         "image/gif": ".gif",
+        "image/avif": ".avif",
     }.get(mime, ".jpg")

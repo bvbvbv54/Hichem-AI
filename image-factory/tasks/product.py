@@ -24,6 +24,7 @@ from database.models.product_link import ProductLink
 from models.enums import JobStatus
 from services.event_bus import publish, EventType, PipelineEvent
 from services.time_estimator import TimeEstimator
+from PIL import Image as PILImage
 
 logger = get_logger(__name__)
 
@@ -144,6 +145,9 @@ def _sanitize_filename(name: str) -> str:
 def _resolve_output_dir(product_name: str) -> Path:
     name_dir = _sanitize_filename(product_name) if product_name else "product"
     base = settings.storage_path
+    user_dir = settings.google_drive_root_folder
+    if user_dir:
+        base = base / _sanitize_filename(user_dir)
     output_dir = base / name_dir
     return output_dir
 
@@ -238,15 +242,40 @@ async def _execute_product_pipeline(self: Any, job_id: str, url: str, project_na
             await estimator.record_stage(job_id, "acquisition", time.monotonic() - stage_start)
 
             output_dir = _resolve_output_dir(product_name)
-            images_dir = output_dir / "images"
-            images_dir.mkdir(parents=True, exist_ok=True)
+            scraped_dir = output_dir / "scraped"
+            scraped_dir.mkdir(parents=True, exist_ok=True)
 
             saved_paths: list[str] = []
             import shutil
             for img_path in acq_result.image_paths:
-                dst = images_dir / Path(img_path).name
+                dst = scraped_dir / Path(img_path).name
                 shutil.copy2(img_path, str(dst))
                 saved_paths.append(str(dst))
+
+            # Content-based dedup: delete duplicate files with same (width, height, file_size)
+            seen_content: dict[tuple, str] = {}
+            dedup_removed = 0
+            final_paths: list[str] = []
+            for sp in saved_paths:
+                sp_path = Path(sp)
+                if not sp_path.exists():
+                    continue
+                fsize = sp_path.stat().st_size
+                try:
+                    with PILImage.open(sp) as img:
+                        content_key = (img.width, img.height, fsize)
+                except Exception:
+                    content_key = (0, 0, fsize)
+                if content_key in seen_content:
+                    sp_path.unlink(missing_ok=True)
+                    dedup_removed += 1
+                    logger.info("dedup_deleted_duplicate", path=sp, key=content_key)
+                else:
+                    seen_content[content_key] = sp
+                    final_paths.append(sp)
+            saved_paths = final_paths
+            if dedup_removed:
+                logger.info("dedup_summary", dedup_removed=dedup_removed, kept=len(saved_paths))
 
             if product_description:
                 desc_path = output_dir / "description.json"
@@ -274,6 +303,41 @@ async def _execute_product_pipeline(self: Any, job_id: str, url: str, project_na
             except Exception as kg_error:
                 logger.warning("knowledge_graph_update_failed", job_id=job_id, error=str(kg_error))
 
+            # Google Drive auto-upload
+            drive_folder_url = ""
+            if settings.google_drive_auto_upload and saved_paths:
+                try:
+                    sa_dir = Path(settings.google_drive_credentials_path).parent
+                    sa_path = sa_dir / "service_account.json"
+                    if sa_path.exists():
+                        from services.storage.google_drive import get_drive_manager
+                        mgr = get_drive_manager()
+                        authed = await mgr.use_service_account(str(sa_path))
+                        if authed:
+                            up_result = await mgr.upload_product_outputs(
+                                product_name=product_name,
+                                file_paths=saved_paths,
+                                root_folder_name=settings.google_drive_root_folder,
+                            )
+                            drive_folder_url = up_result.get("folder_url", "")
+                            logger.info("drive_auto_uploaded", product=product_name, url=drive_folder_url, files=len(saved_paths))
+                            await publish(PipelineEvent(
+                                event_type=EventType.DRIVE_SAVED,
+                                job_id=job_id,
+                                data={"product_name": product_name, "folder_url": drive_folder_url, "file_count": len(saved_paths)},
+                            ))
+                            from services.notifications import send_notification, NotificationLevel
+                            await send_notification(
+                                user_id="",
+                                title="Drive: Images Saved",
+                                message=f"{len(saved_paths)} images for '{product_name}' uploaded to Google Drive",
+                                event_type="drive_saved",
+                                level=NotificationLevel.SUCCESS,
+                                data={"product_name": product_name, "folder_url": drive_folder_url, "file_count": len(saved_paths)},
+                            )
+                except Exception as drv_err:
+                    logger.warning("drive_auto_upload_failed", job_id=job_id, error=str(drv_err))
+
             result_data = {
                 "job_id": job_id,
                 "url": url,
@@ -285,12 +349,14 @@ async def _execute_product_pipeline(self: Any, job_id: str, url: str, project_na
                 "stage": "scraped_only",
                 "marketplace": marketplace,
                 "session_id": session_id,
+                "drive_folder_url": drive_folder_url,
             }
 
             meta = {
                 **result_data,
                 "url": url,
                 "product_name": product_name,
+                "drive_folder_url": drive_folder_url,
             }
             async with async_session() as session:
                 repo = JobRepository(session)

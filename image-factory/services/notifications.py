@@ -188,3 +188,17 @@ async def send_notification(
     
     await service.publish(notification)
     await service.store(notification)
+
+    # Also publish to events channel for SSE delivery
+    try:
+        from services.event_bus import publish as event_publish, PipelineEvent, EventType
+        await event_publish(PipelineEvent(
+            event_type=EventType.NOTIFICATION,
+            job_id=notification.run_id or "",
+            data={
+                "notification": notification.model_dump(),
+                "type": EventType.NOTIFICATION.value,
+            },
+        ))
+    except Exception as e:
+        logger.warning("notification_sse_publish_failed", error=str(e))
