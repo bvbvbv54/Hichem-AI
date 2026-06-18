@@ -14,7 +14,6 @@ logger = get_logger(__name__)
 
 CACHE_PREFIX = "img_cache:"
 URL_CACHE_PREFIX = "img_url_cache:"
-CACHE_TTL = settings.scraper_cache_ttl_days * 86400
 
 
 class ImageCache:
@@ -30,6 +29,7 @@ class ImageCache:
     async def get_or_download(self, url: str, job_id: str) -> tuple[str | None, bool]:
         redis_conn = await self._get_redis()
         url_hash = hashlib.sha256(url.encode()).hexdigest()
+
         content_hash = await redis_conn.get(f"{URL_CACHE_PREFIX}{url_hash}")
         if content_hash:
             sha_key = content_hash.decode()
@@ -40,10 +40,13 @@ class ImageCache:
                     logger.info("cache_hit", url=url, path=path_str)
                     return path_str, True
                 logger.info("cache_stale_file_missing", url=url, path=path_str)
+                await redis_conn.delete(f"{URL_CACHE_PREFIX}{url_hash}")
+                await redis_conn.delete(f"{CACHE_PREFIX}{sha_key}")
+
         local_path, sha256 = await self.downloader.download(url, job_id)
         if local_path and sha256:
-            await redis_conn.setex(f"{URL_CACHE_PREFIX}{url_hash}", CACHE_TTL, sha256)
-            await redis_conn.setex(f"{CACHE_PREFIX}{sha256}", CACHE_TTL, local_path)
+            await redis_conn.set(f"{URL_CACHE_PREFIX}{url_hash}", sha256)
+            await redis_conn.set(f"{CACHE_PREFIX}{sha256}", local_path)
             return local_path, False
         return None, False
 

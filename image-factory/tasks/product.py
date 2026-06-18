@@ -455,4 +455,7 @@ async def _update_job_status(job_id: str, status: JobStatus, **extra):
 async def _mark_job_failed(job_id: str, error_message: str, failure_type: str = "unknown"):
     async with async_session() as session:
         repo = JobRepository(session)
-        await repo.update_status(job_id, JobStatus.FAILED, error_message=error_message, meta={"failure_type": failure_type})
+        job = await repo.get(job_id)
+        existing_meta = dict(job.meta or {}) if job else {}
+        existing_meta["failure_type"] = failure_type
+        await repo.update_status(job_id, JobStatus.FAILED, error_message=error_message, meta=existing_meta)
