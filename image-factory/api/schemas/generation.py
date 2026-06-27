@@ -6,21 +6,14 @@ from pydantic import BaseModel, Field
 
 
 class GenerationRequest(BaseModel):
-    prompt: str = Field("", description="Optional initial prompt.")
-    subject: str = Field("", description="Subject for prompt generation (requires CLAUDE_API_KEY).")
+    prompt: str = Field("", description="Image generation prompt.")
     negative_prompt: str = ""
     template_name: str = ""
-    template_parameters: dict[str, Any] = {}
     width: int = 1024
     height: int = 1024
     num_images: int = 1
     model_name: str = ""
     project_name: str = ""
-    style: Optional[str] = None
-    mood: Optional[str] = None
-    context: Optional[str] = None
-    use_claude: bool = False
-    enhance_prompt: bool = False
     parameters: dict[str, Any] = {}
 
 

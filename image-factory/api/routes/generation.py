@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.schemas.generation import (
@@ -26,10 +26,10 @@ async def generate_image(
     request: GenerationRequest,
     repo: JobRepository = Depends(get_job_repo),
 ):
-    if not request.prompt and not request.subject:
+    if not request.prompt:
         raise HTTPException(
             status_code=422,
-            detail="Either 'prompt' or 'subject' must be provided",
+            detail="'prompt' must be provided",
         )
 
     job_data = {
@@ -44,15 +44,7 @@ async def generate_image(
         "num_images": request.num_images,
         "model_name": request.model_name,
         "project_name": request.project_name,
-        "parameters": {
-            "style": request.style,
-            "mood": request.mood,
-            "context": request.context,
-            "subject": request.subject,
-            "use_claude": request.use_claude,
-            "enhance_prompt": request.enhance_prompt,
-            **request.parameters,
-        },
+        "parameters": request.parameters,
     }
 
     job = await repo.create(job_data)
@@ -93,15 +85,7 @@ async def bulk_generate(
             "project_name": entry.project_name or request.project_name,
             "parent_job_id": parent_job.id,
             "is_bulk_item": True,
-            "parameters": {
-                "style": entry.style,
-                "mood": entry.mood,
-                "context": entry.context,
-                "subject": entry.subject,
-                "use_claude": entry.use_claude,
-                "enhance_prompt": entry.enhance_prompt,
-                **entry.parameters,
-            },
+            "parameters": entry.parameters,
         }
         child = await repo.create(child_data)
         child_ids.append(child.id)

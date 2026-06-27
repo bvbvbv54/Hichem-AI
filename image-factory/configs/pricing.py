@@ -1,16 +1,6 @@
 from __future__ import annotations
 
 MODEL_PRICING = {
-    # Anthropic Claude models (per million tokens, in USD)
-    "claude-sonnet-4-20250514": {"input_per_million": 3.0, "output_per_million": 15.0, "provider": "anthropic"},
-    "claude-sonnet-4": {"input_per_million": 3.0, "output_per_million": 15.0, "provider": "anthropic"},
-    "claude-3-opus-latest": {"input_per_million": 15.0, "output_per_million": 75.0, "provider": "anthropic"},
-    "claude-3-opus-20240229": {"input_per_million": 15.0, "output_per_million": 75.0, "provider": "anthropic"},
-    "claude-3-sonnet-20240229": {"input_per_million": 3.0, "output_per_million": 15.0, "provider": "anthropic"},
-    "claude-3-haiku-20240307": {"input_per_million": 0.25, "output_per_million": 1.25, "provider": "anthropic"},
-    "claude-3-5-sonnet-20241022": {"input_per_million": 3.0, "output_per_million": 15.0, "provider": "anthropic"},
-    "claude-3-5-haiku-20241022": {"input_per_million": 0.80, "output_per_million": 4.0, "provider": "anthropic"},
-
     # OpenAI models
     "gpt-4o": {"input_per_million": 2.50, "output_per_million": 10.0, "provider": "openai"},
     "gpt-4o-mini": {"input_per_million": 0.15, "output_per_million": 0.60, "provider": "openai"},
@@ -41,7 +31,6 @@ MODEL_PRICING = {
 
 STORAGE_COST_PER_GB_PER_MONTH = 0.023
 
-DEFAULT_TEXT_MODEL = "claude-sonnet-4-20250514"
 DEFAULT_IMAGE_MODEL = "flux"
 
 PRICING_FALLBACK_TEXT_PER_1K = 0.003

@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 import { Loader2, CheckCircle2, XCircle, Clock, ChevronDown, ChevronUp } from "lucide-react";
 import type { ActiveJob } from "@/types";
 
-const stageOrder = ["pending", "extracting", "translating", "repositioning", "generating_images", "delivering", "completed"];
+const stageOrder = ["pending", "extracting", "translating", "generating_images", "delivering", "completed"];
 
 function jobStageIndex(status: string): number {
   const idx = stageOrder.indexOf(status);

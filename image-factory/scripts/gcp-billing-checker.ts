@@ -119,28 +119,6 @@ async function validateApiKey(key: string): Promise<{ status: string; error?: st
  * curl -X GET \
  *   "https://generativelanguage.googleapis.com/v1beta/models?key=${GOOGLE_API_KEY}"
  */
-async function validateApiKeyGemini(key: string): Promise<{ status: string; models?: string[]; error?: string }> {
-  if (!key) return { status: "not_configured" };
-
-  const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`;
-
-  try {
-    const resp = await fetchWithRetry(url);
-    const data = await resp.json();
-
-    if (resp.ok) {
-      const models = (data.models || []).map((m: any) => m.name.replace("models/", ""));
-      return { status: "valid", models };
-    }
-    if (resp.status === 403) {
-      return { status: "invalid", error: "API key invalid or unauthorized" };
-    }
-    return { status: "invalid", error: data.error?.message || `HTTP ${resp.status}` };
-  } catch (err: any) {
-    return { status: "invalid", error: err.message };
-  }
-}
-
 // ─── Billing Account Info ────────────────────────────────────────
 
 /**
@@ -486,18 +464,7 @@ async function main() {
     report.apiKeyStatus = validation.status as "valid" | "invalid";
     report.apiKeyError = validation.error;
 
-    if (validation.status === "valid") {
-      // Also check Gemini models
-      const geminiCheck = await validateApiKeyGemini(GOOGLE_API_KEY);
-      if (geminiCheck.status === "valid" && geminiCheck.models) {
-        report.alerts.push(`API key valid. Gemini models available: ${geminiCheck.models.length}`);
-        // Check for Nano Banana specifically
-        const hasNanoBanana = geminiCheck.models.some((m) => m.includes("nano-banana"));
-        if (hasNanoBanana) {
-          report.alerts.push("Nano Banana model is available on this API key");
-        }
-      }
-    } else {
+    if (validation.status !== "valid") {
       report.alerts.push(`API key validation failed: ${validation.error}`);
     }
   }

@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-
-
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -23,8 +22,6 @@ from configs.logging import get_logger
 from services.translation_service import batch_translate, contains_chinese
 
 logger = get_logger(__name__)
-
-from PIL import Image as PILImage
 
 router = APIRouter(prefix="/content", tags=["Content"])
 
@@ -152,7 +149,6 @@ async def get_product_detail(
 
     seen_scraped_paths: set[str] = set()
     seen_generated_paths: set[str] = set()
-    seen_scraped_content: set[tuple] = set()
 
     for job in jobs:
         assets_result = await session.execute(
@@ -162,11 +158,10 @@ async def get_product_detail(
 
         for asset in assets:
             fp = asset.file_path or ""
-            content_key = (asset.width, asset.height, asset.file_size)
-            if content_key[0] and content_key[1] and content_key[0] >= 200:
-                if content_key in seen_scraped_content:
-                    continue
-                seen_scraped_content.add(content_key)
+            if fp and fp in (seen_scraped_paths | seen_generated_paths):
+                continue
+            meta = asset.meta or {}
+            is_scraped = meta.get("type") == "scraped" or "scraped" in (asset.filename or "")
             img_info = {
                 "id": asset.id,
                 "job_id": asset.job_id,
@@ -179,8 +174,6 @@ async def get_product_detail(
                 "alt_text": asset.alt_text,
                 "created_at": asset.created_at.isoformat() if asset.created_at else None,
             }
-            meta = asset.meta or {}
-            is_scraped = meta.get("type") == "scraped" or "scraped" in (asset.filename or "")
             target_set = seen_scraped_paths if is_scraped else seen_generated_paths
             if fp and fp in target_set:
                 continue
@@ -198,6 +191,8 @@ async def get_product_detail(
             if img_path in seen_scraped_paths:
                 continue
             seen_scraped_paths.add(img_path)
+            if not Path(img_path).exists():
+                continue
             img_id = hashlib.sha256(img_path.encode()).hexdigest()[:12]
             scraped_images.append({
                 "id": img_id,
@@ -221,6 +216,12 @@ async def get_product_detail(
             "progress": job.progress,
             "error_message": job.error_message or "",
         })
+
+    # Translate product name if it contains Chinese
+    if link.product_name and contains_chinese(link.product_name):
+        translated_map = await batch_translate([link.product_name])
+        if link.product_name in translated_map:
+            link.product_name = translated_map[link.product_name]
 
     return ProductDetailResponse(
         product=ProductLinkSchema.model_validate(link),
@@ -279,11 +280,20 @@ async def dedup_product_images(
         if dj:
             all_jobs.append(dj)
 
-    seen_content: dict[tuple, int] = {}
+    # Deduplicate jobs by ID
+    seen_job_ids: set[str] = set()
+    unique_jobs = []
+    for j in all_jobs:
+        if j.id not in seen_job_ids:
+            seen_job_ids.add(j.id)
+            unique_jobs.append(j)
+    all_jobs = unique_jobs
+
     deleted_count = 0
     kept_count = 0
     deleted_paths: list[str] = []
     asset_ids_to_delete: list[str] = []
+    all_image_paths: list[str] = []
 
     for job in all_jobs:
         assets_result = await session.execute(
@@ -294,46 +304,71 @@ async def dedup_product_images(
         for asset in assets:
             fp = asset.file_path or ""
             fpath = Path(fp)
-            if not fpath.exists():
-                continue
-            fsize = fpath.stat().st_size
-            try:
-                with PILImage.open(fp) as img:
-                    content_key = (img.width, img.height, fsize)
-            except Exception:
-                content_key = (0, 0, fsize)
-
-            if content_key in seen_content:
-                fpath.unlink(missing_ok=True)
-                asset_ids_to_delete.append(asset.id)
-                deleted_paths.append(fp)
-                deleted_count += 1
-            else:
-                seen_content[content_key] = 1
-                kept_count += 1
+            if fpath.exists():
+                all_image_paths.append(str(fpath))
 
         # Also check job meta saved_assets
         job_meta = job.meta or {}
         saved = job_meta.get("saved_assets", [])
         for meta_path in saved:
-            if meta_path in deleted_paths:
-                continue
             mp = Path(meta_path)
-            if not mp.exists():
-                continue
-            fsize = mp.stat().st_size
-            try:
-                with PILImage.open(str(mp)) as img:
-                    content_key = (img.width, img.height, fsize)
-            except Exception:
-                content_key = (0, 0, fsize)
-            if content_key in seen_content:
-                mp.unlink(missing_ok=True)
-                deleted_paths.append(meta_path)
-                deleted_count += 1
-            else:
-                seen_content[content_key] = 1
-                kept_count += 1
+            if mp.exists():
+                all_image_paths.append(str(mp))
+
+    # Run difPy dedup on all collected image paths
+    if len(all_image_paths) >= 2:
+        import tempfile
+        import shutil
+        temp_dedup_dir = Path(tempfile.mkdtemp(prefix="dedup_"))
+        try:
+            path_map: dict[str, str] = {}
+            for img_path in all_image_paths:
+                src = Path(img_path)
+                dst = temp_dedup_dir / src.name
+                if dst.exists():
+                    dst = temp_dedup_dir / f"{uuid.uuid4().hex[:8]}_{src.name}"
+                shutil.copy2(str(src), str(dst))
+                path_map[str(dst)] = str(src)
+
+            import difPy
+            dif = difPy.build(str(temp_dedup_dir), recursive=False, in_folder=True,
+                              limit_extensions=True, px_size=50,
+                              show_progress=False, processes=1)
+            search = difPy.search(dif, similarity='duplicates', rotate=True,
+                                  same_dim=False, show_progress=False, processes=1)
+
+            deleted_local: set[str] = set()
+            for dup_path in search.lower_quality:
+                orig_path = path_map.get(dup_path)
+                if orig_path:
+                    Path(orig_path).unlink(missing_ok=True)
+                    deleted_paths.append(orig_path)
+                    deleted_local.add(orig_path)
+                    deleted_count += 1
+
+            # Remove deleted files from saved_assets lists and mark assets for deletion
+            for job in all_jobs:
+                assets_result = await session.execute(
+                    select(Asset).where(Asset.job_id == job.id)
+                )
+                for asset in assets_result.scalars().all():
+                    if asset.file_path in deleted_local:
+                        asset_ids_to_delete.append(asset.id)
+
+                job_meta = job.meta or {}
+                saved = job_meta.get("saved_assets", [])
+                updated_saved = [p for p in saved if p not in deleted_local]
+                if len(updated_saved) != len(saved):
+                    job_meta["saved_assets"] = updated_saved
+                    from sqlalchemy import update as sql_update
+                    await session.execute(
+                        sql_update(Job).where(Job.id == job.id).values(meta=job_meta)
+                    )
+
+        finally:
+            shutil.rmtree(temp_dedup_dir, ignore_errors=True)
+
+    kept_count = len(all_image_paths) - deleted_count
 
     # Delete duplicate assets from DB
     if asset_ids_to_delete:

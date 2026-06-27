@@ -51,20 +51,8 @@ class Settings(BaseSettings):
     redis_url: str = "redis://redis:6379/0"
     redis_broker_url: str = "redis://redis:6379/1"
 
-    # Claude defaults (overridable from DB)
-    claude_api_key: str = ""
-    claude_model: str = "claude-sonnet-4-20250514"
-    claude_max_tokens: int = 4096
-    claude_temperature: float = 0.7
-
-    # Google AI (shared key for Gemini + Nano Banana)
-    google_api_key: str = ""
-    gemini_api_key: str = ""  # kept for backward compat
-    nano_banana_api_key: str = ""  # kept for backward compat
-    gemini_vision_model: str = "gemini-2.0-flash"
-    gemini_text_model: str = "gemini-2.0-flash"
-
     # OpenRouter defaults
+    google_api_key: str = ""
     openrouter_api_key: str = ""
 
     # Image Provider defaults (overridable from DB)

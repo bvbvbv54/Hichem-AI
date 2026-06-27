@@ -61,29 +61,18 @@ async def set_provider_api_key(key_name: str, value: str, session: AsyncSession)
 
 
 async def get_google_api_key(session: AsyncSession) -> tuple[str, str]:
-    """Read google_api_key with fallback to gemini_api_key / nano_banana_api_key for backward compat."""
     val, src = await get_setting_with_source("google_api_key", session)
-    if val:
-        return val, src
-    val, src = await get_setting_with_source("gemini_api_key", session)
-    if val:
-        return val, src
-    val, src = await get_setting_with_source("nano_banana_api_key", session)
     if val:
         return val, src
     return "", "default"
 
 
 async def set_google_api_key(value: str, session: AsyncSession) -> None:
-    """Write google_api_key (also back-fill gemini_api_key for legacy consumers)."""
     await set_setting("google_api_key", value, session)
-    # back-fill legacy keys so existing consumers still work
-    await set_setting("gemini_api_key", value, session)
-    await set_setting("nano_banana_api_key", value, session)
 
 
 async def get_provider_keys_status(session: AsyncSession) -> dict:
-    keys = ["google_api_key", "claude_api_key", "openrouter_api_key"]
+    keys = ["google_api_key", "openrouter_api_key"]
     result = {}
     for key in keys:
         if key == "google_api_key":
@@ -96,23 +85,6 @@ async def get_provider_keys_status(session: AsyncSession) -> dict:
             "source": src,
         }
     return result
-
-
-async def get_claude_config(session: AsyncSession) -> dict:
-    model, model_src = await get_setting_with_source("claude_model", session, "claude-sonnet-4-20250514")
-    tokens, tokens_src = await get_setting_with_source("claude_max_tokens", session, "4096")
-    temp, temp_src = await get_setting_with_source("claude_temperature", session, "0.7")
-    return {
-        "claude_model": {"value": model, "source": model_src},
-        "claude_max_tokens": {"value": int(tokens), "source": tokens_src},
-        "claude_temperature": {"value": float(temp), "source": temp_src},
-    }
-
-
-async def set_claude_config(model: str, max_tokens: int, temperature: float, session: AsyncSession) -> None:
-    await set_setting("claude_model", model, session)
-    await set_setting("claude_max_tokens", str(max_tokens), session)
-    await set_setting("claude_temperature", str(temperature), session)
 
 
 # Pricing is now internal only — read from configs/pricing.py
@@ -165,14 +137,12 @@ async def set_storage_enabled(enabled: bool, session: AsyncSession) -> None:
 async def get_all_settings(session: AsyncSession) -> dict:
     """Return all configurable settings grouped by category."""
     provider_keys = await get_provider_keys_status(session)
-    claude_cfg = await get_claude_config(session)
     img2img = await get_img2img_config(session)
     storage = await get_storage_config(session)
     budget, budget_src = await get_setting_with_source("monthly_budget_cents", session, str(settings.monthly_budget_cents))
 
     return {
         "provider_keys": provider_keys,
-        "claude": claude_cfg,
         "img2img": img2img,
         "storage": storage,
         "monthly_budget_cents": {"value": int(budget), "source": budget_src},

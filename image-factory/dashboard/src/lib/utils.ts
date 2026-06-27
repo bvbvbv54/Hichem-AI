@@ -51,7 +51,6 @@ export function statusColor(status: string): string {
     queued: "text-yellow-500",
     extracting: "text-blue-500",
     translating: "text-purple-500",
-    repositioning: "text-orange-500",
     generating_images: "text-pink-500",
     delivering: "text-cyan-500",
     draft: "text-muted-foreground",

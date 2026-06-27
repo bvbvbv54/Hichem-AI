@@ -13,9 +13,6 @@ from configs.logging import get_logger
 logger = get_logger(__name__)
 
 IMAGE_MODELS = [
-    "google/gemini-2.5-flash-image",
-    "google/gemini-3.1-flash-image-preview",
-    "google/gemini-3-pro-image-preview",
     "black-forest-labs/flux.2-pro",
     "openai/gpt-5.4-image-2",
 ]

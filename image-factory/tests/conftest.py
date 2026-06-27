@@ -1,44 +1,8 @@
 from __future__ import annotations
 
-import sys
-import types
-
-# Mock google modules before any service imports trigger them
 from pathlib import Path
 from typing import Any, AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock, patch
-
-# Mock google modules before any service imports trigger them
-class _MockGenerativeModel:
-    def generate_content(self, *a, **kw):
-        return MagicMock(text="mocked response")
-
-    def __call__(self, *a, **kw):
-        return self
-
-class _MockGenAI:
-    def configure(self, **kw):
-        pass
-    def GenerativeModel(self, *a, **kw):
-        return _MockGenerativeModel()
-    def GenerationConfig(self, **kw):
-        return kw
-
-gemini_mock = types.ModuleType("google.generativeai")
-mock_genai = _MockGenAI()
-gemini_mock.__dict__["configure"] = mock_genai.configure
-gemini_mock.__dict__["GenerativeModel"] = mock_genai.GenerativeModel
-gemini_mock.__dict__["GenerationConfig"] = mock_genai.GenerationConfig
-sys.modules["google.generativeai"] = gemini_mock
-
-# Also mock google.api_core for Gemini client retry decorator
-api_core = types.ModuleType("google.api_core")
-api_core.exceptions = types.ModuleType("google.api_core.exceptions")
-api_core.exceptions.ResourceExhausted = Exception
-api_core.exceptions.ServiceUnavailable = Exception
-api_core.exceptions.DeadlineExceeded = Exception
-sys.modules["google.api_core"] = api_core
-sys.modules["google.api_core.exceptions"] = api_core.exceptions
 
 import pytest
 import pytest_asyncio
@@ -92,31 +56,6 @@ def chinese_test_image(fixture_path: Path) -> bytes:
 def sample_batch_json(fixture_path: Path) -> list[dict]:
     import json
     return json.loads((fixture_path / "sample_batch.json").read_text())
-
-
-@pytest.fixture
-def mock_gemini():
-    """Mock GeminiClient for pipeline tests."""
-    with patch("services.gemini.client.GeminiClient") as mock:
-        client = MagicMock()
-        client.generate_text = AsyncMock(return_value="A beautiful product image with premium lighting.")
-        client.generate_with_images = AsyncMock(return_value=(
-            "Product name: Test Product\nMaterial: Leather\nDimensions: 10x10x5cm",
-            {"product_name": "Test Product", "material": "Leather", "dimensions": "10x10x5cm"},
-        ))
-        mock.return_value = client
-        yield client
-
-
-@pytest.fixture
-def mock_gemini_singleton():
-    """Mock the gemini_client singleton used across pipeline stages."""
-    with patch("services.pipeline.stage1_analyzer.gemini_client") as mock:
-        mock.generate_with_images = AsyncMock(return_value=(
-            '{"product_name":"Test","material":"Plastic","dimensions":"5x5x5","logo":"none","translated_labels":[],"key_visual_features":["red"],"background_color":"white","primary_colors":["red"],"detected_language":"en"}',
-            {},
-        ))
-        yield mock
 
 
 @pytest.fixture

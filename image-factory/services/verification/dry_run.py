@@ -38,11 +38,11 @@ class DryRunEngine:
                 description="INSERT into jobs table, status=pending",
             ),
             DryRunStep(
-                step="text_generation",
-                action="Generate minimal test prompt via Claude",
-                estimated_cost_cents=1,
-                estimated_duration_s=2.0,
-                description=f"1 text call to {settings.claude_model} with 50 token prompt",
+                step="prompt_preparation",
+                action="Prepare hardcoded image prompt",
+                estimated_cost_cents=0,
+                estimated_duration_s=0.1,
+                description="Use built-in prompt template (no LLM call)",
             ),
             DryRunStep(
                 step="image_generation",
@@ -95,9 +95,6 @@ class DryRunEngine:
     def preview_full_job(self) -> DryRunReport:
         steps = [
             DryRunStep("extract", "Extract product data from URL", 0, 3.0, "1 HTTP request to supplier page"),
-            DryRunStep("translate", "Translate content (if needed)", 1, 1.0, "~100 token Claude call"),
-            DryRunStep("reposition", "AI product repositioning", 3, 5.0, "~500 token Claude call"),
-            DryRunStep("image_brief", "Generate image prompts", 2, 3.0, "~300 token Claude call"),
             DryRunStep("generate_1", "Generate hero image", 10, 5.0, "1x image generation"),
             DryRunStep("generate_2", "Generate lifestyle image", 10, 5.0, "1x image generation"),
             DryRunStep("generate_3", "Generate detail image", 10, 5.0, "1x image generation"),

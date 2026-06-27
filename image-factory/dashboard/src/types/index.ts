@@ -30,7 +30,6 @@ export interface Product {
     | "waiting"
     | "extracting"
     | "translating"
-    | "repositioning"
     | "generating_images"
     | "delivering"
     | "completed"
@@ -152,14 +151,12 @@ export interface DailyStats {
 export interface PerformanceStats {
   avg_generation_time: number;
   avg_extraction_time: number;
-  avg_repositioning_time: number;
   avg_delivery_time: number;
   success_rate: number;
   failed_rate: number;
 }
 
 export interface CostStats {
-  claude_cost: number;
   image_generation_cost: number;
   storage_cost: number;
   total_cost: number;

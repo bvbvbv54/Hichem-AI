@@ -254,7 +254,7 @@ export const api = {
     request<any>("/content/products/stats"),
 
   // Credit Check
-  checkCredits: (data: { batch_id: string; num_images_per_product?: number; use_claude?: boolean }) =>
+  checkCredits: (data: { batch_id: string; num_images_per_product?: number }) =>
     request<any>("/products/check-credits", {
       method: "POST",
       body: JSON.stringify(data),
@@ -272,6 +272,13 @@ export const api = {
   getStorageSettings: () => request<any>("/admin/settings/storage"),
   updateStorageSettings: (storagePath: string) =>
     request<any>("/admin/settings/storage", { method: "PUT", body: JSON.stringify({ storage_local_path: storagePath }) }),
+
+  // Clear all data for fresh start
+  clearAllData: () =>
+    request<{ status: string; deleted_product_links: number; deleted_jobs: number; deleted_assets: number; deleted_redis_keys: number; message: string }>(
+      "/admin/data/clear-all",
+      { method: "DELETE" }
+    ),
 
   // Scrapfly Usage
   getScrapflyUsage: () => request<any>("/admin/scrapfly/usage"),

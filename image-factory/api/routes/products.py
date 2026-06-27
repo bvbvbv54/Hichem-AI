@@ -66,7 +66,6 @@ class CreditCheckRequest(BaseModel):
     batch_id: str
     project_id: str = ""
     num_images_per_product: int = 1
-    use_claude: bool = True
 
 
 class CreditCheckResponse(BaseModel):
@@ -79,7 +78,6 @@ class CreditCheckResponse(BaseModel):
     max_images_affordable: int
     warning_message: str
     cost_per_image_cents: float = 1.0
-    cost_per_claude_call_cents: float = 0.03
     require_confirmation: bool
 
 
@@ -287,7 +285,6 @@ async def check_credits_before_generation(
         session=session,
         product_count=product_count,
         images_per_product=req.num_images_per_product,
-        use_claude=req.use_claude,
     )
 
     require_confirmation = not credit_status.sufficient or credit_status.available_credits_cents < 100.0
@@ -317,7 +314,6 @@ async def check_credits_before_generation(
         max_images_affordable=credit_status.max_images_affordable,
         warning_message=credit_status.warning_message,
         cost_per_image_cents=balancer.COST_PER_IMAGE_CENTS,
-        cost_per_claude_call_cents=balancer.COST_PER_CLAUDE_CALL_CENTS,
         require_confirmation=require_confirmation,
     )
 
@@ -553,7 +549,6 @@ async def start_generation(
         credit_status = await balancer.check_sufficient_credits(
             product_count=len(products),
             images_per_product=req.num_images_per_product if req.num_images_per_product > 0 else 1,
-            use_claude=bool(settings.claude_api_key),
         )
         if not credit_status.sufficient:
             raise HTTPException(

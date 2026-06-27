@@ -1,12 +1,5 @@
 from __future__ import annotations
 
-import sys
-import types
-
-gemini_mock = types.ModuleType("google.generativeai")
-gemini_mock.configure = lambda **kw: None
-sys.modules["google.generativeai"] = gemini_mock
-
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 
@@ -91,7 +84,7 @@ async def test_generate_with_subject(async_client):
         mock_task.delay = MagicMock()
         response = await async_client.post(
             "/api/v1/generate",
-            json={"subject": "Red luxury handbag", "use_claude": True},
+            json={"prompt": "A red luxury handbag on a white background"},
             headers={"X-API-Key": "test-api-key"},
         )
         assert response.status_code == 200

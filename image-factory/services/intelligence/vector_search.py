@@ -5,7 +5,6 @@ from typing import Any
 
 import redis.asyncio as aioredis
 
-from configs.settings import settings
 from configs.logging import get_logger
 from services.intelligence.knowledge_graph import ProductKnowledgeGraph
 from services.intelligence.models import KnowledgeNode
@@ -27,34 +26,6 @@ class VectorSearch:
         return self._redis
 
     async def generate_embedding(self, text: str) -> list[float]:
-        try:
-            from configs.settings import settings as app_settings
-            api_key = app_settings.google_api_key or app_settings.gemini_api_key or app_settings.nano_banana_api_key
-            if api_key:
-                import google.generativeai as genai
-                genai.configure(api_key=api_key)
-                model = genai.GenerativeModel("gemini-2.0-flash")
-                result = model.generate_content(f"Generate a semantic embedding vector representation of: {text[:500]}")
-                if result and result.text:
-                    import re
-                    numbers = re.findall(r"-?\d+\.?\d*", result.text)
-                    if len(numbers) >= 128:
-                        return [float(n) for n in numbers[:256]]
-            if app_settings.claude_api_key:
-                from services.claude.client import ClaudeClient
-                client = ClaudeClient()
-                response = await client.generate(
-                    f"Return a list of 128 floating point numbers representing a semantic embedding for: {text[:300]}",
-                    max_tokens=1024,
-                )
-                if response:
-                    import re
-                    numbers = re.findall(r"-?\d+\.?\d*", response)
-                    if len(numbers) >= 128:
-                        return [float(n) for n in numbers[:256]]
-        except Exception as exc:
-            logger.warning("embedding_generation_failed", error=str(exc))
-
         import hashlib
         seed = hashlib.sha256(text.encode()).digest()
         import random

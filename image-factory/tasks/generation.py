@@ -62,54 +62,7 @@ async def _execute_generation(job_id: str):
             await _publish_job_event(job_id, JobStatus.PROCESSING.value)
 
             parameters = job.parameters or {}
-            use_claude = parameters.get("use_claude", bool(settings.claude_api_key))
-            enhance = parameters.get("enhance_prompt", True)
-            subject = parameters.get("subject", "")
-
             final_prompt = job.prompt or ""
-
-            llm_calls: list[dict] = []
-
-            if use_claude and (not final_prompt or enhance):
-                from services.claude.client import ClaudeClient
-                claude = ClaudeClient()
-                try:
-                    if not final_prompt and subject:
-                        style = parameters.get("style")
-                        mood = parameters.get("mood")
-                        context = parameters.get("context")
-                        if job.template_name:
-                            from services.claude.templates import get_template
-                            from services.claude.enhancer import PromptEnhancer
-                            template = get_template(job.template_name)
-                            enhancer = PromptEnhancer(claude)
-                            final_prompt = await enhancer.full_pipeline(
-                                subject=subject,
-                                template=template,
-                                template_params=job.parameters.get("template_parameters"),
-                                style=style,
-                                mood=mood,
-                                context=context,
-                            )
-                        else:
-                            final_prompt = await claude.generate_prompt(
-                                subject=subject, style=style, mood=mood, context=context,
-                            )
-                    elif enhance and final_prompt:
-                        final_prompt = await claude.enhance_prompt(final_prompt)
-                    usage = claude.last_usage
-                    if usage:
-                        llm_calls.append({
-                            "provider": "anthropic",
-                            "model": claude.model,
-                            "input_tokens": usage.get("input_tokens", 0),
-                            "output_tokens": usage.get("output_tokens", 0),
-                        })
-                finally:
-                    await claude.close()
-
-            await repo.update(job_id, {"enhanced_prompt": final_prompt, "status": JobStatus.ENHANCING_PROMPT.value})
-            await _publish_job_event(job_id, JobStatus.ENHANCING_PROMPT.value, 25.0)
 
             await repo.update_status(job_id, JobStatus.GENERATING)
             await _publish_job_event(job_id, JobStatus.GENERATING.value, 50.0)
@@ -133,12 +86,12 @@ async def _execute_generation(job_id: str):
 
             total_pixels = (job.width or 1024) * (job.height or 1024)
             image_provider = settings.image_provider or "replicate"
-            llm_calls.append({
+            llm_calls = [{
                 "provider": image_provider,
                 "model": job.model_name or "flux",
                 "type": "image_generation",
                 "estimated_cost": round(total_pixels * 0.00000002, 6),
-            })
+            }]
 
             await repo.update_status(job_id, JobStatus.STORING)
             await _publish_job_event(job_id, JobStatus.STORING.value, 75.0)
@@ -390,7 +343,6 @@ def process_smoke_test(self, job_id: str, test_id: str):
 async def _execute_smoke_test(job_id: str, test_id: str):
     from services.verification.cost_controller import CostController
     from services.verification.smoke_test import SmokeTestStep
-    from services.claude.client import ClaudeClient
     from services.nano_banana.client import NanoBananaClient
     from services.nano_banana.models import GenerationRequest
     from services.storage.local import LocalStorage
@@ -445,26 +397,11 @@ async def _execute_smoke_test(job_id: str, test_id: str):
                 }
             product = await run_step("load_product", _load_product)
 
-            # Step 2: Text Generation
+            # Step 2: Hardcoded prompt (no Claude)
             async def _text_gen():
-                cost.check_text_budget()
-                claude = ClaudeClient()
-                if settings.smoke_use_cheapest_model:
-                    claude.model = "claude-3-haiku-20240307"
-                try:
-                    prompt = f"Write a 1-sentence photo description for {product['title']}."
-                    system = "You are a test assistant. Reply with a short description."
-                    response = await claude.generate_text(
-                        system_prompt=system,
-                        user_prompt=prompt,
-                        max_tokens=20,
-                        temperature=0.0,
-                    )
-                    cost.record_text_call(cost_cents=1)
-                    return {"prompt": prompt, "response": response.strip(), "model": claude.model}
-                finally:
-                    await claude.close()
-            text_result = await run_step("text_generation", _text_gen)
+                prompt = f"Professional product photograph of {product['title']}. Clean white background, studio lighting."
+                return {"prompt": prompt, "response": prompt}
+            text_result = await run_step("prompt_preparation", _text_gen)
 
             # Step 3: Image Generation
             async def _image_gen():

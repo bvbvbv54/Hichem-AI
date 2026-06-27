@@ -93,10 +93,6 @@ def check_api_keys() -> Tuple[bool, List[str]]:
     with open(".env") as f:
         env_content = f.read()
 
-    has_gemini = "GEMINI_API_KEY=" in env_content and "change-me" not in env_content
-    if not has_gemini:
-        issues.append("ERROR: GEMINI_API_KEY not configured (AI pipeline will fail)")
-
     has_image_key = "IMAGE_PROVIDER_API_KEY=" in env_content and "change-me" not in env_content
     if not has_image_key:
         issues.append("WARNING: IMAGE_PROVIDER_API_KEY not configured (image generation may fail)")

@@ -21,10 +21,8 @@ class CreditEstimate:
     total_products: int
     total_images: int
     estimated_cost_cents: float
-    claude_calls: int
     nano_banana_calls: int
     cost_per_image_cents: float = 1.0
-    cost_per_claude_call_cents: float = 0.03
 
 
 @dataclass
@@ -47,25 +45,17 @@ class NanoBananaCreditBalancer:
         self._cached_key_valid: Optional[bool] = None
         self._cached_models: Optional[list[str]] = None
         self._cost_per_image_cents: float = 1.0
-        self._cost_per_claude_call_cents: float = 0.03
 
     async def _load_pricing(self, session: Optional[AsyncSession] = None) -> None:
         if session:
             img_cost = await get_setting("cost_per_image_cents", session, "1.0")
-            claude_cost = await get_setting("cost_per_claude_call_cents", session, "0.03")
             self._cost_per_image_cents = float(img_cost)
-            self._cost_per_claude_call_cents = float(claude_cost)
         else:
             self._cost_per_image_cents = 1.0
-            self._cost_per_claude_call_cents = 0.03
 
     @property
     def COST_PER_IMAGE_CENTS(self) -> float:
         return self._cost_per_image_cents
-
-    @property
-    def COST_PER_CLAUDE_CALL_CENTS(self) -> float:
-        return self._cost_per_claude_call_cents
 
     async def validate_api_key(self, session: Optional[AsyncSession] = None) -> dict:
         api_key = ""
@@ -128,32 +118,25 @@ class NanoBananaCreditBalancer:
         self._cached_key_valid = None
         self._cached_models = None
 
-    def estimate_cost(self, product_count: int, images_per_product: int = 1, use_claude: bool = True) -> CreditEstimate:
+    def estimate_cost(self, product_count: int, images_per_product: int = 1) -> CreditEstimate:
         total_images = product_count * images_per_product
-        claude_calls = product_count if use_claude else 0
         nano_banana_calls = total_images
-
-        estimated_cost = (
-            claude_calls * self._cost_per_claude_call_cents
-            + nano_banana_calls * self._cost_per_image_cents
-        )
+        estimated_cost = nano_banana_calls * self._cost_per_image_cents
 
         return CreditEstimate(
             total_products=product_count,
             total_images=total_images,
             estimated_cost_cents=estimated_cost,
-            claude_calls=claude_calls,
             nano_banana_calls=nano_banana_calls,
             cost_per_image_cents=self._cost_per_image_cents,
-            cost_per_claude_call_cents=self._cost_per_claude_call_cents,
         )
 
-    async def check_sufficient_credits(self, session: AsyncSession, product_count: int, images_per_product: int = 1, use_claude: bool = True) -> CreditStatus:
+    async def check_sufficient_credits(self, session: AsyncSession, product_count: int, images_per_product: int = 1) -> CreditStatus:
         balance = await self.check_balance(session)
-        estimate = self.estimate_cost(product_count, images_per_product, use_claude)
+        estimate = self.estimate_cost(product_count, images_per_product)
 
         deficit = estimate.estimated_cost_cents - balance
-        max_affordable = int(balance / (self._cost_per_image_cents + (self._cost_per_claude_call_cents if use_claude else 0))) if balance > 0 else 0
+        max_affordable = int(balance / self._cost_per_image_cents) if balance > 0 else 0
         images_per_product_effective = max(1, images_per_product)
         max_products_affordable = max(0, max_affordable // images_per_product_effective)
 

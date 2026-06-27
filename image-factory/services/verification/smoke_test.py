@@ -248,22 +248,7 @@ class SmokeTestEngine:
         return {"backends": delivery_results}
 
     async def _step_text_generation(self) -> dict[str, Any]:
-        self.cost.check_text_budget()
-        from services.claude.client import ClaudeClient
-        claude = ClaudeClient()
-        try:
-            prompt = "Reply with exactly one word: ok"
-            system = "You are a test assistant. Reply with exactly one word."
-            response = await claude.generate_text(
-                system_prompt=system,
-                user_prompt=prompt,
-                max_tokens=10,
-                temperature=0.0,
-            )
-            self.cost.record_text_call(cost_cents=1)
-            return {"prompt": prompt, "response": response.strip(), "tokens_estimate": "~10"}
-        finally:
-            await claude.close()
+        return {"prompt": "Built-in prompt", "response": SMOKE_SAMPLE_PROMPT, "source": "hardcoded"}
 
     async def _step_image_generation(self) -> dict[str, Any]:
         self.cost.check_image_budget()

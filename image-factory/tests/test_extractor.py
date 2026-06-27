@@ -1,14 +1,5 @@
 from __future__ import annotations
 
-import sys
-import types
-
-gemini_mock = types.ModuleType("google.generativeai")
-gemini_mock.__dict__["configure"] = lambda **kw: None
-gemini_mock.__dict__["GenerativeModel"] = lambda *a, **kw: types.SimpleNamespace(generate_content=lambda *aa, **kk: types.SimpleNamespace(text="mocked"))
-gemini_mock.__dict__["GenerationConfig"] = lambda **kw: kw
-sys.modules["google.generativeai"] = gemini_mock
-
 import csv
 import io
 import json

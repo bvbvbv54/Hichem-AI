@@ -19,7 +19,7 @@ from database.models.notification import Notification
 from database.models.product_link import ProductLink
 from configs.logging import get_logger
 from configs.settings import settings
-from services.settings_service import get_provider_api_key, set_provider_api_key, get_provider_keys_status, get_setting, set_setting, get_claude_config, set_claude_config, get_img2img_config, set_img2img_config, get_storage_config, set_storage_config, set_storage_enabled, get_google_api_key, set_google_api_key, get_all_settings
+from services.settings_service import get_provider_api_key, set_provider_api_key, get_provider_keys_status, get_setting, set_setting, get_img2img_config, set_img2img_config, get_storage_config, set_storage_config, set_storage_enabled, get_google_api_key, set_google_api_key, get_all_settings
 from database.models.asset import Asset
 
 logger = get_logger(__name__)
@@ -344,39 +344,6 @@ async def update_budget(
 @router.get("/settings", summary="Get all configurable settings grouped by category")
 async def list_all_settings(session: AsyncSession = Depends(get_session)):
     return await get_all_settings(session)
-
-
-@router.put("/provider-keys/claude", summary="Update Claude API key (persisted to DB)")
-async def update_claude_key(
-    body: dict,
-    session: AsyncSession = Depends(get_session),
-):
-    key = body.get("key", "")
-    if not key:
-        raise HTTPException(status_code=400, detail="key is required")
-    await set_provider_api_key("claude_api_key", key.strip(), session)
-    return {"status": "updated", "key": key[:8] + "..." + key[-4:] if len(key) > 12 else "***"}
-
-
-@router.get("/settings/claude", summary="Get Claude model configuration")
-async def get_claude_settings(session: AsyncSession = Depends(get_session)):
-    return await get_claude_config(session)
-
-
-@router.put("/settings/claude", summary="Update Claude model configuration")
-async def update_claude_settings(
-    body: dict,
-    session: AsyncSession = Depends(get_session),
-):
-    model = body.get("claude_model", "claude-sonnet-4-20250514")
-    max_tokens = body.get("claude_max_tokens", 4096)
-    temperature = body.get("claude_temperature", 0.7)
-    if not isinstance(max_tokens, int) or max_tokens < 1:
-        raise HTTPException(status_code=400, detail="claude_max_tokens must be a positive integer")
-    if not isinstance(temperature, (int, float)) or temperature < 0 or temperature > 1:
-        raise HTTPException(status_code=400, detail="claude_temperature must be between 0 and 1")
-    await set_claude_config(model, max_tokens, temperature, session)
-    return {"status": "updated", "claude_model": model, "claude_max_tokens": max_tokens, "claude_temperature": temperature}
 
 
 # Pricing is now internal-only — configured via configs/pricing.py

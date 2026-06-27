@@ -528,13 +528,9 @@ async function authFetch(url: string, options: RequestInit = {}): Promise<Respon
 
 export default function SettingsPage() {
   const [googleKey, setGoogleKey] = useState("");
-  const [claudeKey, setClaudeKey] = useState("");
   const [savedGoogleKey, setSavedGoogleKey] = useState(false);
-  const [savedClaudeKey, setSavedClaudeKey] = useState(false);
   const [showGoogleKey, setShowGoogleKey] = useState(false);
-  const [showClaudeKey, setShowClaudeKey] = useState(false);
   const [savingGoogle, setSavingGoogle] = useState(false);
-  const [savingClaude, setSavingClaude] = useState(false);
   const [googleKeyError, setGoogleKeyError] = useState("");
 
   const queryClient = useQueryClient();
@@ -547,9 +543,6 @@ export default function SettingsPage() {
   useEffect(() => {
     if (providerKeys?.google_api_key?.configured) {
       setSavedGoogleKey(true);
-    }
-    if (providerKeys?.claude_api_key?.configured) {
-      setSavedClaudeKey(true);
     }
   }, [providerKeys]);
 
@@ -588,25 +581,7 @@ export default function SettingsPage() {
     }
   };
 
-  const saveClaudeKey = async () => {
-    if (!claudeKey.trim()) return;
-    setSavingClaude(true);
-    try {
-      const result = await authFetch("/api/v1/admin/provider-keys/claude", {
-        method: "PUT",
-        body: JSON.stringify({ key: claudeKey.trim() }),
-      });
-      if (!result.ok) throw new Error(await result.text());
-      setSavedClaudeKey(true);
-      setClaudeKey("");
-      toast({ title: "Claude API key saved" });
-      queryClient.invalidateQueries({ queryKey: ["provider-keys"] });
-    } catch (err: any) {
-      toast({ title: "Failed to save key", description: err.message, variant: "destructive" });
-    } finally {
-      setSavingClaude(false);
-    }
-  };
+
 
   return (
     <div className="space-y-6 max-w-2xl">
@@ -662,34 +637,6 @@ export default function SettingsPage() {
 
           <Separator />
 
-          {/* Claude API Key */}
-          <div className="space-y-2">
-            <Label>Claude API Key</Label>
-            <div className="flex gap-2">
-              <div className="relative flex-1">
-                <Input
-                  type={showClaudeKey ? "text" : "password"}
-                  placeholder={savedClaudeKey ? "Key is configured on server" : "Enter your Claude API key"}
-                  value={claudeKey}
-                  onChange={(e) => setClaudeKey(e.target.value)}
-                />
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7"
-                  onClick={() => setShowClaudeKey(!showClaudeKey)}
-                >
-                  {showClaudeKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </Button>
-              </div>
-              <Button onClick={saveClaudeKey} disabled={!claudeKey.trim() || savingClaude}>
-                <Save className="h-4 w-4 mr-1" /> Save
-              </Button>
-            </div>
-            {savedClaudeKey && !claudeKey.trim() && (
-              <p className="text-xs text-green-600 font-medium">Key is configured on server</p>
-            )}
-          </div>
         </CardContent>
       </Card>
 
