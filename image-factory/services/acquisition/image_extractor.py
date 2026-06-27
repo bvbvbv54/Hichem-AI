@@ -55,6 +55,28 @@ def extract_page_description(html: str) -> str:
     return ""
 
 
+def _img_quality(url: str) -> int:
+    lower = url.lower()
+    score = 0
+    if "sl" in lower:
+        m = re.search(r"sl(\d+)", lower)
+        if m:
+            score = int(m.group(1))
+    if "ux" in lower:
+        m = re.search(r"ux(\d+)", lower)
+        if m:
+            score = max(score, int(m.group(1)))
+    if "sy" in lower:
+        m = re.search(r"sy(\d+)", lower)
+        if m:
+            score = max(score, int(m.group(1)))
+    if "sx" in lower:
+        m = re.search(r"sx(\d+)", lower)
+        if m:
+            score = max(score, int(m.group(1)))
+    return score
+
+
 def extract_image_urls(html: str, page_url: str) -> list[str]:
     soup = BeautifulSoup(html, "lxml")
     seen: set[str] = set()
@@ -118,26 +140,6 @@ def extract_image_urls(html: str, page_url: str) -> list[str]:
                 urls.append(u)
 
     if len(urls) > 1:
-        def _img_quality(url: str) -> int:
-            lower = url.lower()
-            score = 0
-            if "sl" in lower:
-                m = re.search(r"sl(\d+)", lower)
-                if m:
-                    score = int(m.group(1))
-            if "ux" in lower:
-                m = re.search(r"ux(\d+)", lower)
-                if m:
-                    score = max(score, int(m.group(1)))
-            if "sy" in lower:
-                m = re.search(r"sy(\d+)", lower)
-                if m:
-                    score = max(score, int(m.group(1)))
-            if "sx" in lower:
-                m = re.search(r"sx(\d+)", lower)
-                if m:
-                    score = max(score, int(m.group(1)))
-            return score
         urls.sort(key=_img_quality, reverse=True)
 
     if not urls:
@@ -190,26 +192,6 @@ def extract_image_urls(html: str, page_url: str) -> list[str]:
                 urls.append(u)
 
     if len(urls) > 1:
-        def _img_quality(url: str) -> int:
-            lower = url.lower()
-            score = 0
-            if "sl" in lower:
-                m = re.search(r"sl(\d+)", lower)
-                if m:
-                    score = int(m.group(1))
-            if "ux" in lower:
-                m = re.search(r"ux(\d+)", lower)
-                if m:
-                    score = max(score, int(m.group(1)))
-            if "sy" in lower:
-                m = re.search(r"sy(\d+)", lower)
-                if m:
-                    score = max(score, int(m.group(1)))
-            if "sx" in lower:
-                m = re.search(r"sx(\d+)", lower)
-                if m:
-                    score = max(score, int(m.group(1)))
-            return score
         urls.sort(key=_img_quality, reverse=True)
 
     return urls
@@ -221,7 +203,8 @@ _CDN_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"https?://[^\"'\s]*alicdn[^\"'\s]*\.(?:jpg|jpeg|png|webp|avif|gif)(?:\?[^\"'\s]*)?", re.I), "alicdn"),
     (re.compile(r"https?://[^\"'\s]*dhresource[^\"'\s]*\.(?:jpg|jpeg|png|webp|avif|gif)(?:\?[^\"'\s]*)?", re.I), "dhresource"),
     (re.compile(r"https?://[^\"'\s]*(?:aimg|img|commimg)\.kwcdn[^\"'\s]*\.(?:jpg|jpeg|png|webp|avif|gif)(?:\?[^\"'\s]*)?", re.I), "kwcdn"),
-    (re.compile(r"https?://[^\"'\s]*made-in-china[^\"'\s]*\.(?:jpg|jpeg|png|webp|avif|gif)(?:\?[^\"'\s]*)?", re.I), "made-in-china"),
+    (re.compile(r"https?://[^\"'\s]*kwcdn[^\"'\s]*\.(?:jpg|jpeg|png|webp|avif|gif)(?:\?[^\"'\s]*)?", re.I), "kwcdn2"),
+    (re.compile(r"https?://[^\"'\s]*(?:made-in-china|image\.made|micstatic)[^\"'\s]*\.(?:jpg|jpeg|png|webp|avif|gif)(?:\?[^\"'\s]*)?", re.I), "made-in-china"),
     (re.compile(r"https?://[^\"'\s]*cbu0[0-9][^\"'\s]*\.(?:jpg|jpeg|png|webp|avif|gif)(?:\?[^\"'\s]*)?", re.I), "cbu"),
     (re.compile(r"https?://[^\"'\s]*(?:ae0[0-9]|ae01)[^\"'\s]*\.(?:jpg|jpeg|png|webp|avif|gif)(?:\?[^\"'\s]*)?", re.I), "aliexpress"),
     (re.compile(r"https?://[^\"'\s]*image\.made-in-china[^\"'\s]*\.(?:jpg|jpeg|png|webp|avif|gif)(?:\?[^\"'\s]*)?", re.I), "made-in-china-img"),
@@ -229,6 +212,7 @@ _CDN_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"https?://[^\"'\s]*m\.media-amazon[^\"'\s]*\.(?:jpg|jpeg|png|webp|avif|gif)(?:\?[^\"'\s]*)?", re.I), "amazon"),
     (re.compile(r"https?://[^\"'\s]*img[0-9]?\.(?:jd|360buyimg)[^\"'\s]*\.(?:jpg|jpeg|png|webp|avif|gif)(?:\?[^\"'\s]*)?", re.I), "jd"),
     (re.compile(r"https?://[^\"'\s]*taobao[^\"'\s]*\.(?:jpg|jpeg|png|webp|avif|gif)(?:\?[^\"'\s]*)?", re.I), "taobao"),
+    (re.compile(r"https?://[^\"'\s]*ae-pic-a1[^\"'\s]*\.(?:jpg|jpeg|png|webp|avif|gif)(?:\?[^\"'\s]*)?", re.I), "ae-pic"),
     (re.compile(r"https?://[^\"'\s]*\.(?:jpg|jpeg|png|webp|avif|gif)[^\"'\s]*(?:\?[^\"'\s]*)?", re.I), "generic"),
 ]
 
@@ -409,6 +393,442 @@ def _extract_protocol_relative(html: str, page_url: str, seen: set[str]) -> list
             if len(results) >= 10:
                 return results
     return results
+
+
+_AMAZON_IMG_ID = re.compile(r"/images/I/([A-Za-z0-9._-]+)")
+
+
+def _add_amazon_image(url: str, seen_ids: set[str], urls: list[str]) -> None:
+    abs_url = url.split("?")[0].split("#")[0]
+    id_m = _AMAZON_IMG_ID.search(abs_url)
+    if id_m:
+        img_id = id_m.group(1).split(".")[0]
+        if img_id not in seen_ids:
+            seen_ids.add(img_id)
+            full = f"https://m.media-amazon.com/images/I/{img_id}.jpg"
+            urls.append(full)
+    elif abs_url not in urls:
+        urls.append(abs_url)
+
+
+def _extract_amazon_color_images_from_script(html: str) -> list[str]:
+    seen_ids: set[str] = set()
+    urls: list[str] = []
+
+    pattern = re.compile(r'"hiRes"\s*:\s*"((?:https?:)?//m\.media-amazon\.com/images/I/[^"]+)"', re.I)
+    for m in pattern.finditer(html):
+        url = m.group(1)
+        if not url.startswith("http"):
+            url = "https:" + url
+        id_m = _AMAZON_IMG_ID.search(url)
+        if id_m:
+            img_id = id_m.group(1).split(".")[0]
+            if img_id not in seen_ids:
+                seen_ids.add(img_id)
+                urls.append(url)
+
+    if urls:
+        return urls
+
+    return _extract_amazon_images_fallback(html)
+
+
+def _extract_amazon_images_fallback(html: str) -> list[str]:
+    soup = BeautifulSoup(html, "lxml")
+    seen_ids: set[str] = set()
+    urls: list[str] = []
+
+    for img in soup.find_all("img", attrs={"data-a-dynamic-image": True}):
+        val = img.get("data-a-dynamic-image", "")
+        if val.startswith("{"):
+            try:
+                parsed = json.loads(val)
+                for url_key in parsed:
+                    _add_amazon_image(url_key, seen_ids, urls)
+            except json.JSONDecodeError:
+                pass
+
+    landing = soup.select_one("#landingImage")
+    if landing:
+        for attr in ("src", "data-old-hires", "data-a-dynamic-image"):
+            val = landing.get(attr, "")
+            if val and isinstance(val, str) and val.startswith("http"):
+                _add_amazon_image(val, seen_ids, urls)
+
+    for thumb in soup.select("#altImages img, #imageBlockThumbnails img, [data-a-image-name^='thumb'] img"):
+        src = thumb.get("src", "")
+        if src:
+            _add_amazon_image(src, seen_ids, urls)
+
+    for img in soup.find_all("img"):
+        src = img.get("src", "")
+        if src and "media-amazon" in src:
+            _add_amazon_image(src, seen_ids, urls)
+
+    return urls[:10]
+
+
+def extract_amazon_images(html: str) -> list[str]:
+    return _extract_amazon_color_images_from_script(html)
+
+
+_1688_GALLERY_SELECTORS = [
+    ".detail-gallery img",
+    ".product-gallery img",
+    ".tb-thumb img",
+    "#detail-pic img",
+    ".tb-gallery img",
+    ".detail-pic-wrap img",
+    "[data-widget-type='PicGallery'] img",
+    ".module-od-picture-gallery img",
+    ".od-gallery-preview img",
+    "ul.od-gallery-list img",
+    "[class*='preview-img'] img",
+]
+
+_1688_REJECT_PATTERNS = [
+    re.compile(r"/tfs/", re.I),
+    re.compile(r"/tps/", re.I),
+    re.compile(r"-tps-\d+", re.I),
+    re.compile(r"gw\.alicdn\.com", re.I),
+    re.compile(r"//img\.alicdn\.com/tfs/"),
+    re.compile(r"//img\.alicdn\.com/tps/"),
+    re.compile(r"//img\.alicdn\.com/imgextra/.*?-tps-"),
+    re.compile(r"\.slim\.(?:jpg|png|webp)"),
+    re.compile(r"captcha", re.I),
+    re.compile(r"/cms/upload/"),
+]
+
+
+def _extract_json_var(html: str, var_name: str) -> dict | None:
+    patterns = [
+        rf"window\.{var_name}\s*=\s*({{\s*.*?}});",
+        rf"var\s+{var_name}\s*=\s*({{\s*.*?}});",
+        rf"const\s+{var_name}\s*=\s*({{\s*.*?}});",
+        rf"let\s+{var_name}\s*=\s*({{\s*.*?}});",
+    ]
+    for pat in patterns:
+        for m in re.finditer(pat, html, re.DOTALL):
+            try:
+                return json.loads(m.group(1))
+            except (json.JSONDecodeError, Exception):
+                continue
+    return None
+
+
+def _deep_get(obj: dict | list, path: str, default=None):
+    parts = path.split(".")
+    current = obj
+    for part in parts:
+        if isinstance(current, dict):
+            current = current.get(part)
+        elif isinstance(current, list) and part.isdigit():
+            idx = int(part)
+            current = current[idx] if idx < len(current) else None
+        else:
+            return default
+        if current is None:
+            return default
+    return current
+
+
+def _is_1688_product_image(url: str) -> bool:
+    if not _looks_like_product_image(url):
+        return False
+    lower = url.lower()
+    for pat in _1688_REJECT_PATTERNS:
+        if pat.search(lower):
+            return False
+    return True
+
+
+def _extract_1688_gallery(html: str, page_url: str) -> list[str]:
+    seen: set[str] = set()
+    urls: list[str] = []
+
+    # Method 1: Embedded JSON (window.offerView.imageList)
+    offer_view = _extract_json_var(html, "offerView")
+    if offer_view:
+        image_list = _deep_get(offer_view, "imageList", [])
+        if isinstance(image_list, list):
+            for item in image_list:
+                if isinstance(item, str):
+                    abs_url = urljoin(page_url, item)
+                    if _is_1688_product_image(abs_url) and abs_url not in seen:
+                        seen.add(abs_url)
+                        urls.append(abs_url)
+                elif isinstance(item, dict):
+                    for key in ("url", "src", "original", "fullSizeImageUrl"):
+                        val = item.get(key, "")
+                        if val:
+                            abs_url = urljoin(page_url, val)
+                            if _is_1688_product_image(abs_url) and abs_url not in seen:
+                                seen.add(abs_url)
+                                urls.append(abs_url)
+
+    if urls:
+        return urls
+
+    # Method 1b: Inline JSON arrays (offerImgList, mainImage) found in IIFE or script data
+    for key in ("offerImgList", "mainImage"):
+        m = re.search(rf'"{key}"\s*:\s*(\[.+?\])', html, re.DOTALL)
+        if m:
+            try:
+                items = json.loads(m.group(1))
+                for item in items if isinstance(items, list) else [items]:
+                    if isinstance(item, str):
+                        abs_url = urljoin(page_url, item)
+                        if _is_1688_product_image(abs_url) and abs_url not in seen:
+                            seen.add(abs_url)
+                            urls.append(abs_url)
+            except (json.JSONDecodeError, Exception):
+                pass
+
+    if urls:
+        return urls
+
+    # Method 2: DOM gallery container selectors
+    soup = BeautifulSoup(html, "lxml") if not urls else None
+    if soup:
+        for selector in _1688_GALLERY_SELECTORS:
+            for el in soup.select(selector):
+                src = el.get("src") or el.get("data-src") or el.get("data-lazyload") or ""
+                if src:
+                    abs_url = urljoin(page_url, src)
+                    if _is_1688_product_image(abs_url) and abs_url not in seen:
+                        seen.add(abs_url)
+                        urls.append(abs_url)
+                data_imgs = el.get("data-imgs", "")
+                if data_imgs and data_imgs.strip().startswith("["):
+                    try:
+                        items = json.loads(data_imgs)
+                        for item in items if isinstance(items, list) else [items]:
+                            if isinstance(item, dict):
+                                for key in ("imgSrc", "src", "url", "image"):
+                                    val = item.get(key, "")
+                                    if val:
+                                        abs_url = urljoin(page_url, val)
+                                        if _is_1688_product_image(abs_url) and abs_url not in seen:
+                                            seen.add(abs_url)
+                                            urls.append(abs_url)
+                    except (json.JSONDecodeError, Exception):
+                        pass
+
+        if urls:
+            return urls
+
+        # Method 3: Any img.alicdn.com URL that looks like a product image (scoped but no known gallery container found)
+        for img in soup.find_all("img"):
+            for attr in ("src", "data-src", "data-lazyload", "data-original"):
+                val = img.get(attr, "")
+                if val and "alicdn" in val.lower():
+                    abs_url = urljoin(page_url, val)
+                    if _is_1688_product_image(abs_url) and abs_url not in seen:
+                        seen.add(abs_url)
+                        urls.append(abs_url)
+
+    if urls:
+        return urls
+
+    # Method 4: Raw-HTML regex fallback for alicdn URLs (catches images embedded in JS/JSON/IIFE)
+    for m in re.finditer(r'https?://[^"\'\\s>]*alicdn[^"\'\\s>]*\.(?:jpg|jpeg|png|webp)', html, re.I):
+        abs_url = m.group(0)
+        if _is_1688_product_image(abs_url) and abs_url not in seen:
+            seen.add(abs_url)
+            urls.append(abs_url)
+
+    return urls
+
+
+_ALIBABA_GALLERY_SELECTORS = [
+    ".product-gallery img",
+    ".image-gallery img",
+    ".detail-gallery img",
+    ".gallery-container img",
+    ".image-viewer img",
+    ".magnifier img",
+    "[data-component-type='product-gallery'] img",
+    ".gallery-wrap img",
+    ".detail-content .gallery img",
+    ".detail-gallery-magnifier img",
+]
+
+_ALIBABA_JSON_VARS = ["pageData", "product", "detailData"]
+
+
+def _looks_like_alibaba_image(url: str) -> bool:
+    if not _looks_like_product_image(url):
+        return False
+    lower = url.lower()
+    for pat in _1688_REJECT_PATTERNS:
+        if pat.search(lower):
+            return False
+    return True
+
+
+def _extract_alibaba_gallery(html: str, page_url: str) -> list[str]:
+    seen: set[str] = set()
+    urls: list[str] = []
+
+    # Method 1: Embedded JSON (pageData.images, product.images)
+    for var_name in _ALIBABA_JSON_VARS:
+        data = _extract_json_var(html, var_name)
+        if data:
+            for path in ("images", "imageList", "gallery", "imageUrl"):
+                imgs = _deep_get(data, path, [])
+                if isinstance(imgs, list):
+                    for item in imgs:
+                        if isinstance(item, str):
+                            abs_url = urljoin(page_url, item)
+                            if _looks_like_alibaba_image(abs_url) and abs_url not in seen:
+                                seen.add(abs_url)
+                                urls.append(abs_url)
+                        elif isinstance(item, dict):
+                            for key in ("url", "src", "original", "fullSizeImageUrl", "imageUrl", "imgUrl"):
+                                val = item.get(key, "")
+                                if val:
+                                    abs_url = urljoin(page_url, val)
+                                    if _looks_like_alibaba_image(abs_url) and abs_url not in seen:
+                                        seen.add(abs_url)
+                                        urls.append(abs_url)
+
+    if urls:
+        return urls
+
+    # Method 1b: JSON-LD structured data (Product.image)
+    soup = BeautifulSoup(html, "lxml")
+    json_ld_urls = _extract_json_ld_images(soup)
+    for u in json_ld_urls:
+        abs_url = urljoin(page_url, u)
+        if _looks_like_alibaba_image(abs_url) and abs_url not in seen:
+            seen.add(abs_url)
+            urls.append(abs_url)
+
+    if urls:
+        return urls
+
+    # Method 2: DOM gallery container selectors
+    for selector in _ALIBABA_GALLERY_SELECTORS:
+        for el in soup.select(selector):
+            src = el.get("src") or el.get("data-src") or el.get("data-lazyload") or el.get("data-original") or ""
+            if src:
+                abs_url = urljoin(page_url, src)
+                if _looks_like_alibaba_image(abs_url) and abs_url not in seen:
+                    seen.add(abs_url)
+                    urls.append(abs_url)
+            data_imgs = el.get("data-imgs", "")
+            if data_imgs and data_imgs.strip().startswith("["):
+                try:
+                    items = json.loads(data_imgs)
+                    for item in items if isinstance(items, list) else [items]:
+                        if isinstance(item, dict):
+                            for key in ("imgSrc", "src", "url", "image"):
+                                val = item.get(key, "")
+                                if val:
+                                    abs_url = urljoin(page_url, val)
+                                    if _looks_like_alibaba_image(abs_url) and abs_url not in seen:
+                                        seen.add(abs_url)
+                                        urls.append(abs_url)
+                except (json.JSONDecodeError, Exception):
+                    pass
+
+    if urls:
+        return urls
+
+    # Method 3: Any img inside a gallery-like container (broader match)
+    gallery_containers = [
+        ".product-gallery", ".image-gallery", ".detail-gallery",
+        ".gallery-container", ".image-viewer", ".magnifier",
+        "[data-component-type='product-gallery']",
+    ]
+    for container_sel in gallery_containers:
+        for container in soup.select(container_sel):
+            for img in container.find_all("img"):
+                src = img.get("src") or img.get("data-src") or ""
+                if src:
+                    abs_url = urljoin(page_url, src)
+                    if _looks_like_alibaba_image(abs_url) and abs_url not in seen:
+                        seen.add(abs_url)
+                        urls.append(abs_url)
+
+    if urls:
+        return urls
+
+    # Method 4: Raw-HTML regex fallback for alicdn / sc04.alicdn.com URLs
+    for m in re.finditer(r'https?://[^"\'\\s>]*(?:sc0[0-9]\.alicdn|alicdn)[^"\'\\s>]*\.(?:jpg|jpeg|png|webp)', html, re.I):
+        abs_url = m.group(0)
+        if _looks_like_alibaba_image(abs_url) and abs_url not in seen:
+            seen.add(abs_url)
+            urls.append(abs_url)
+
+    return urls
+
+
+def validate_product_page(url: str, html: str) -> tuple[bool, str]:
+    from urllib.parse import urlparse
+    soup = BeautifulSoup(html, "lxml")
+    title_tag = soup.find("title")
+    title = title_tag.get_text(strip=True) if title_tag else ""
+    h1_tag = soup.find("h1")
+    h1 = h1_tag.get_text(strip=True) if h1_tag else ""
+
+    # Check for captcha
+    title_lower = title.lower()
+    if any(kw in title_lower for kw in ["captcha", "just a moment", "please wait", "attention required",
+                                         "verify", "access denied", "blocked", "security check"]):
+        return False, f"Blocked by captcha/security page: {title}"
+
+    # Check for empty/meaningless H1
+    if not h1 or len(h1) < 5:
+        return False, f"No meaningful product title found (H1='{h1[:50]}')"
+
+    # Extract numeric product ID from URL (e.g. "60607930952" from "..._60607930952.html")
+    import re as _re
+    parsed = urlparse(url)
+    path_parts = [p for p in parsed.path.split("/") if p]
+    product_id = None
+    for part in path_parts:
+        id_match = _re.search(r"_(\d{5,})", part)
+        if id_match:
+            product_id = id_match.group(1)
+            break
+    if product_id and product_id not in html:
+        return False, f"Product ID '{product_id}' not found in page content"
+
+    return True, ""
+
+
+# Per-domain image extractor dispatch table.
+# Add new site-specific extractors here.
+DOMAIN_IMAGE_EXTRACTORS: dict[str, callable] = {
+    "1688.com": _extract_1688_gallery,
+    "detail.1688.com": _extract_1688_gallery,
+    "alibaba.com": _extract_alibaba_gallery,
+    "amazon.com": lambda html, page_url: _extract_amazon_color_images_from_script(html),
+    "amazon.co.uk": lambda html, page_url: _extract_amazon_color_images_from_script(html),
+    "amazon.de": lambda html, page_url: _extract_amazon_color_images_from_script(html),
+    "amazon.fr": lambda html, page_url: _extract_amazon_color_images_from_script(html),
+    "amazon.it": lambda html, page_url: _extract_amazon_color_images_from_script(html),
+    "amazon.es": lambda html, page_url: _extract_amazon_color_images_from_script(html),
+    "amazon.ca": lambda html, page_url: _extract_amazon_color_images_from_script(html),
+    "amazon.in": lambda html, page_url: _extract_amazon_color_images_from_script(html),
+    "amazon.com.au": lambda html, page_url: _extract_amazon_color_images_from_script(html),
+    "amazon.com.br": lambda html, page_url: _extract_amazon_color_images_from_script(html),
+    "amazon.com.mx": lambda html, page_url: _extract_amazon_color_images_from_script(html),
+    "amazon.nl": lambda html, page_url: _extract_amazon_color_images_from_script(html),
+    "amazon.pl": lambda html, page_url: _extract_amazon_color_images_from_script(html),
+    "amazon.se": lambda html, page_url: _extract_amazon_color_images_from_script(html),
+    "amazon.sg": lambda html, page_url: _extract_amazon_color_images_from_script(html),
+    "amazon.ae": lambda html, page_url: _extract_amazon_color_images_from_script(html),
+    "amazon.sa": lambda html, page_url: _extract_amazon_color_images_from_script(html),
+}
+
+
+def extract_images_for_domain(html: str, page_url: str, domain: str) -> list[str]:
+    for d, extractor in DOMAIN_IMAGE_EXTRACTORS.items():
+        if d in domain:
+            return extractor(html, page_url)
+    return extract_image_urls(html, page_url)
 
 
 def _looks_like_image(url: str) -> bool:

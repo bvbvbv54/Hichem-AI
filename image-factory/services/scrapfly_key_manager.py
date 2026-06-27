@@ -18,9 +18,17 @@ _KEY_RESET_DATES: dict[str, str] = {
     "SCRAPFLY_KEY_REDACTED": "2026-07-17",
     "SCRAPFLY_KEY_REDACTED": "2026-07-17",
     "SCRAPFLY_KEY_REDACTED": "2026-07-17",
+    "SCRAPFLY_KEY_REDACTED": "2026-07-27",
+    "SCRAPFLY_KEY_REDACTED": "2026-07-27",
+    "SCRAPFLY_KEY_REDACTED": "2026-07-27",
+    "SCRAPFLY_KEY_REDACTED": "2026-07-27",
 }
 
 _FALLBACK_KEYS = [
+    "SCRAPFLY_KEY_REDACTED",
+    "SCRAPFLY_KEY_REDACTED",
+    "SCRAPFLY_KEY_REDACTED",
+    "SCRAPFLY_KEY_REDACTED",
     "SCRAPFLY_KEY_REDACTED",
     "SCRAPFLY_KEY_REDACTED",
 ]
@@ -177,6 +185,65 @@ async def notify_quota_exhausted(redis: Any) -> None:
         logger.warning("scrapfly_quota_notification_failed", error=str(e))
 
 
+async def mark_key_unauthorized(key: str, redis: Any) -> None:
+    """Mark a key as unauthorized (401) so it gets retried after its reset date."""
+    key_short = key[:20]
+    try:
+        if redis:
+            # Store the unauthorized status with a TTL until the reset date
+            reset_str = _KEY_RESET_DATES.get(key)
+            if reset_str:
+                try:
+                    reset_date = datetime.strptime(reset_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                    ttl = int((reset_date - datetime.now(timezone.utc)).total_seconds())
+                    if ttl > 0:
+                        await redis.setex(f"scrapfly:unauthorized:{key_short}", ttl, "1")
+                except (ValueError, TypeError):
+                    await redis.setex(f"scrapfly:unauthorized:{key_short}", 86400 * 31, "1")
+            else:
+                await redis.setex(f"scrapfly:unauthorized:{key_short}", 86400 * 7, "1")
+            DEAD_KEYS.add(key)
+            logger.info("scrapfly_key_marked_unauthorized", key=key_short)
+
+        from services.notifications import send_notification
+        await send_notification(
+            title="Scrapfly Key Unauthorized",
+            message=f"Scrapfly key ({key_short}...) returned 401 Unauthorized. "
+                    f"It will be retried after its reset date.",
+            level="warning",
+            type="scrapfly_key_unauthorized",
+        )
+    except Exception as e:
+        logger.warning("scrapfly_unauthorized_notification_failed", error=str(e))
+
+
+async def retry_unauthorized_keys(redis: Any) -> list[str]:
+    """Check if any previously unauthorized keys are past their reset date and should be retried."""
+    revived: list[str] = []
+    try:
+        if not redis:
+            return revived
+        cursor = 0
+        while True:
+            cursor, keys = await redis.scan(cursor, match="scrapfly:unauthorized:*")
+            for k in keys:
+                key_name = k.decode() if isinstance(k, bytes) else k
+                short = key_name.replace("scrapfly:unauthorized:", "")
+                ttl = await redis.ttl(key_name)
+                if ttl <= 0:
+                    # TTL expired — remove the flag and revive
+                    await redis.delete(key_name)
+                    DEAD_KEYS.discard(short)
+                    revived.append(short)
+            if cursor == 0:
+                break
+        if revived:
+            logger.info("scrapfly_unauthorized_keys_revived", count=len(revived))
+    except Exception as e:
+        logger.warning("scrapfly_retry_unauthorized_error", error=str(e))
+    return revived
+
+
 async def get_keys_with_usage(session: AsyncSession, redis: Any) -> list[dict]:
     import time
     keys = await get_all_keys(session)
@@ -193,10 +260,16 @@ async def get_keys_with_usage(session: AsyncSession, redis: Any) -> list[dict]:
                 remaining = int(r2)
         except Exception:
             pass
+        estimated_scrapes = None
+        cost_per_scrape = 12
+        if remaining is not None:
+            estimated_scrapes = max(0, remaining // cost_per_scrape)
         result.append({
             "key_preview": short + "...",
             "full_key": key,
             "used": used,
             "remaining": remaining,
+            "estimated_scrapes": estimated_scrapes,
+            "cost_per_scrape_estimate": cost_per_scrape,
         })
     return result

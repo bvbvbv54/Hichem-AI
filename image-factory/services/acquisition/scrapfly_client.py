@@ -199,10 +199,15 @@ class ScrapflyClient:
         logger.warning("scrapfly_quota_exhausted_waiting",
                        url=url, poll_interval=poll, max_wait=QUOTA_WAIT_MAX)
 
-        from services.scrapfly_key_manager import _is_key_past_reset, DEAD_KEYS
+        from services.scrapfly_key_manager import _is_key_past_reset, DEAD_KEYS, retry_unauthorized_keys
 
         while time.time() - start < QUOTA_WAIT_MAX:
             await asyncio.sleep(poll)
+
+            # 0. Check if any previously unauthorized keys are now past their retry date
+            revived_unauth = await retry_unauthorized_keys(redis_conn)
+            if revived_unauth:
+                logger.info("scrapfly_unauthorized_keys_revived", revived=len(revived_unauth))
 
             # 1. Re-fetch keys from DB (new key may have been added via admin)
             keys = await self._get_keys()
@@ -261,6 +266,12 @@ class ScrapflyClient:
                 await self._track_usage(redis_conn, key, cost, remaining, remaining_project)
 
                 data = resp.json()
+
+                if resp.status_code == 401:
+                    logger.warning("scrapfly_unauthorized", key=key_short)
+                    from services.scrapfly_key_manager import mark_key_unauthorized
+                    await mark_key_unauthorized(key, redis_conn)
+                    continue
 
                 if resp.status_code == 429:
                     total_429 += 1
