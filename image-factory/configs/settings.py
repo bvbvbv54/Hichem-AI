@@ -114,7 +114,7 @@ class Settings(BaseSettings):
     # Celery
     celery_broker_url: str = "redis://redis:6379/1"
     celery_result_backend: str = "redis://redis:6379/2"
-    celery_worker_concurrency: int = 4
+    celery_worker_concurrency: int = 2
     celery_task_acks_late: bool = True
     celery_task_reject_on_worker_lost: bool = True
     celery_task_retry_max: int = 3
@@ -124,6 +124,10 @@ class Settings(BaseSettings):
     # Scrapfly
     scrapfly_enabled: bool = True
     scrapfly_monthly_budget: int = 3000
+    scrapfly_max_concurrent: int = 1
+    scrapfly_key_cooldown: int = 120
+    scrapfly_request_jitter: float = 3.0
+    scrapfly_quota_poll_interval: int = 300
 
     # Proxy & request delay
     proxy_enabled: bool = True

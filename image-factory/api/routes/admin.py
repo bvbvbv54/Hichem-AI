@@ -20,6 +20,7 @@ from database.models.product_link import ProductLink
 from configs.logging import get_logger
 from configs.settings import settings
 from services.settings_service import get_provider_api_key, set_provider_api_key, get_provider_keys_status, get_setting, set_setting, get_claude_config, set_claude_config, get_img2img_config, set_img2img_config, get_storage_config, set_storage_config, set_storage_enabled, get_google_api_key, set_google_api_key, get_all_settings
+from database.models.asset import Asset
 
 logger = get_logger(__name__)
 
@@ -542,14 +543,24 @@ async def list_scrapfly_keys(
 async def add_scrapfly_key(
     body: dict,
     session: AsyncSession = Depends(get_session),
+    redis: aioredis.Redis = Depends(get_redis),
 ):
     key = body.get("key", "").strip()
     if not key or not key.startswith("scp-"):
         raise HTTPException(status_code=400, detail="Invalid Scrapfly API key format")
     from services.scrapfly_key_manager import add_key
 
-    await add_key(key, session)
-    return {"status": "added", "key_preview": key[:20] + "..."}
+    is_new = await add_key(key, session)
+
+    # Clear quota-exhausted flag so waiting workers resume
+    try:
+        await redis.delete("scrapfly:quota_exhausted")
+        await redis.delete("scrapfly:quota_notified_at")
+        logger.info("scrapfly_quota_flag_cleared_on_key_add")
+    except Exception:
+        pass
+
+    return {"status": "added", "key_preview": key[:20] + "...", "is_new": is_new}
 
 
 @router.delete("/scrapfly/keys", summary="Remove a Scrapfly API key")
@@ -564,6 +575,37 @@ async def remove_scrapfly_key(
 
     await remove_key(key, session)
     return {"status": "removed", "key_preview": key[:20] + "..."}
+
+
+@router.delete("/data/clear-all", summary="Clear all scraped data, products, jobs, and assets for a fresh start")
+async def clear_all_data(
+    session: AsyncSession = Depends(get_session),
+    redis: aioredis.Redis = Depends(get_redis),
+):
+    """Deletes all product links, jobs, assets, and Redis batch data to start fresh."""
+    deleted_product_links = (await session.execute(delete(ProductLink))).rowcount
+    deleted_jobs = (await session.execute(delete(Job))).rowcount
+    deleted_assets = (await session.execute(delete(Asset))).rowcount
+
+    # Clear all Redis keys related to batches
+    import re
+    keys_to_delete = []
+    async for key in redis.scan_iter(match="batch:*"):
+        keys_to_delete.append(key)
+    if keys_to_delete:
+        await redis.delete(*keys_to_delete)
+
+    await session.commit()
+
+    logger.info("clear_all_data", product_links=deleted_product_links, jobs=deleted_jobs, assets=deleted_assets, redis_keys=len(keys_to_delete))
+    return {
+        "status": "cleared",
+        "deleted_product_links": deleted_product_links,
+        "deleted_jobs": deleted_jobs,
+        "deleted_assets": deleted_assets,
+        "deleted_redis_keys": len(keys_to_delete),
+        "message": "All data cleared. Ready for a fresh start.",
+    }
 
 
 @router.post("/products/retry-failed", summary="Retry all failed product links")

@@ -28,6 +28,32 @@ User Request → FastAPI → Celery → Claude (prompt) → Nano Banana (generat
 - **Product Repositioning** — AI-powered transformation of supplier products into premium European-market presentations
 - **Translation** — Multilingual support via Claude
 
+## Image Acquisition
+
+The acquisition pipeline (`services/acquisition/`) extracts product images from Chinese e-commerce sites.
+
+### Supported Sites
+
+| Site | Status | Method | Notes |
+|------|--------|--------|-------|
+| **1688.com** | Fixed | Scrapfly CN + `_extract_1688_gallery()` | Images in IIFE JSON (`offerImgList`). Scoped extractor + raw-HTML fallback. |
+| **alibaba.com** | Fixed | Scrapfly CN + `_extract_alibaba_gallery()` | Images in JSON-LD `Product.image`. JSON-LD extraction + raw-HTML fallback. |
+| **aliexpress.com** | Fixed | Generic `extract_image_urls()` | Extraction works; placeholder GIF rejected by SHA256 hash in `image_downloader.py`. |
+
+### Scrapfly Key Management
+
+- Keys stored in DB (`settings` table) and managed via `/admin/scrapfly/keys` API.
+- Per-key reset dates tracked in `scrapfly_key_manager._KEY_RESET_DATES` — keys auto-revive after their reset date.
+- When all keys hit quota (`429` + `remaining=0`), `fetch_page()` enters a wait loop (polls every 5 min, max 24h) and sends a notification.
+- Adding a new key via admin clears the quota-exhausted flag, causing waiting workers to resume immediately.
+
+### Reject Filters (Placeholder Images)
+
+Known-bad SHA256 hashes in `image_downloader._KNOWN_REJECTED_HASHES`:
+- `a18efca9...` — AliExpress 150×150 animated loading placeholder GIF
+
+To add a new reject hash without code changes, add it to the `global_rejected_hashes` Redis set.
+
 ## Quick Start
 
 ```bash
