@@ -6,8 +6,8 @@ from pydantic import BaseModel, Field
 
 
 class GenerationRequest(BaseModel):
-    prompt: str = Field("", description="Optional initial prompt. If empty, Claude will generate one.")
-    subject: str = Field("", description="Subject for Claude to create a prompt from.")
+    prompt: str = Field("", description="Optional initial prompt.")
+    subject: str = Field("", description="Subject for prompt generation (requires CLAUDE_API_KEY).")
     negative_prompt: str = ""
     template_name: str = ""
     template_parameters: dict[str, Any] = {}
@@ -19,8 +19,8 @@ class GenerationRequest(BaseModel):
     style: Optional[str] = None
     mood: Optional[str] = None
     context: Optional[str] = None
-    use_claude: bool = True
-    enhance_prompt: bool = True
+    use_claude: bool = False
+    enhance_prompt: bool = False
     parameters: dict[str, Any] = {}
 
 

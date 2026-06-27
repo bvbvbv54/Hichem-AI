@@ -20,7 +20,7 @@ async def credit_status(session: AsyncSession = Depends(get_session)):
     key_validation = await balancer.validate_api_key(session)
     balance = await balancer.check_balance(session)
     used = await balancer.get_total_usage_cents(session)
-    estimate = balancer.estimate_cost(product_count=1, images_per_product=1, use_claude=True)
+    estimate = balancer.estimate_cost(product_count=1, images_per_product=1, use_claude=bool(settings.claude_api_key))
 
     key_val, key_src = await get_setting_with_source("nano_banana_api_key", session)
     budget_val, budget_src = await get_setting_with_source("monthly_budget_cents", session)
@@ -51,10 +51,12 @@ async def credit_status(session: AsyncSession = Depends(get_session)):
 async def credit_estimate(
     products: int = 1,
     images_per_product: int = 1,
-    use_claude: bool = True,
+    use_claude: bool | None = None,
     session: AsyncSession = Depends(get_session),
 ):
     balancer = get_credit_balancer()
+    if use_claude is None:
+        use_claude = bool(settings.claude_api_key)
     status = await balancer.check_sufficient_credits(session, products, images_per_product, use_claude)
     return {
         "sufficient": status.sufficient,

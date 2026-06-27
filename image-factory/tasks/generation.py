@@ -62,7 +62,7 @@ async def _execute_generation(job_id: str):
             await _publish_job_event(job_id, JobStatus.PROCESSING.value)
 
             parameters = job.parameters or {}
-            use_claude = parameters.get("use_claude", True)
+            use_claude = parameters.get("use_claude", bool(settings.claude_api_key))
             enhance = parameters.get("enhance_prompt", True)
             subject = parameters.get("subject", "")
 

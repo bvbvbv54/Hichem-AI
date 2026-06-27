@@ -32,6 +32,27 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 
+def _check_drive_readiness() -> tuple[bool, str]:
+    """Check if Google Drive is configured and ready for uploads.
+    Returns (ready: bool, message: str).
+    """
+    if not settings.google_drive_auto_upload:
+        return True, ""
+    sa_dir = Path(settings.google_drive_credentials_path).parent
+    sa_path = sa_dir / "service_account.json"
+    if not sa_path.exists():
+        return False, "Google Drive service account not configured. Upload service account JSON in Settings > Google Drive before proceeding."
+    try:
+        data = json.loads(sa_path.read_text())
+        if not data.get("client_email"):
+            return False, "Google Drive service account file is missing 'client_email' field."
+        if not data.get("private_key"):
+            return False, "Google Drive service account file is missing 'private_key' field."
+    except (json.JSONDecodeError, OSError) as e:
+        return False, f"Google Drive service account file is invalid: {e}"
+    return True, ""
+
+
 class SubmitGenerationRequest(BaseModel):
     batch_id: str
     project_id: str = ""
@@ -162,6 +183,11 @@ async def upload_products(
     if avg_min <= 0:
         avg_min = settings.batch_avg_minutes_per_product
     estimated_duration_minutes = round(parse_result.valid_rows * avg_min)
+
+    # Check Google Drive readiness before dispatching
+    drive_ready, drive_msg = _check_drive_readiness()
+    if not drive_ready:
+        raise HTTPException(status_code=400, detail=drive_msg)
 
     # Dispatch single product tasks for scraping (images + product names)
     from workers.celery_app import celery_app
@@ -527,7 +553,7 @@ async def start_generation(
         credit_status = await balancer.check_sufficient_credits(
             product_count=len(products),
             images_per_product=req.num_images_per_product if req.num_images_per_product > 0 else 1,
-            use_claude=True,
+            use_claude=bool(settings.claude_api_key),
         )
         if not credit_status.sufficient:
             raise HTTPException(
@@ -584,6 +610,10 @@ async def start_generation(
             "per_product_counts": per_product_counts,
         },
     })
+
+    drive_ready, drive_msg = _check_drive_readiness()
+    if not drive_ready:
+        raise HTTPException(status_code=400, detail=drive_msg)
 
     from workers.celery_app import celery_app
     celery_app.send_task("tasks.generation.process_bulk_generation", args=[

@@ -12,10 +12,9 @@ logger = get_logger(__name__)
 
 
 class ClaudeClient:
-    """Client for interacting with Claude API for prompt generation and enhancement."""
-
     def __init__(self) -> None:
         self.api_key = settings.claude_api_key
+        self.is_available = bool(self.api_key)
         self.model = settings.claude_model
         self.max_tokens = settings.claude_max_tokens
         self.temperature = settings.claude_temperature
@@ -28,7 +27,7 @@ class ClaudeClient:
                 "content-type": "application/json",
             },
             timeout=60.0,
-        )
+        ) if self.is_available else None
         self._last_usage: dict | None = None
 
     @property
@@ -36,7 +35,8 @@ class ClaudeClient:
         return self._last_usage
 
     async def close(self) -> None:
-        await self.client.aclose()
+        if self.client:
+            await self.client.aclose()
 
     async def generate_with_images(
         self,
@@ -45,6 +45,8 @@ class ClaudeClient:
         image_paths: list[str],
         **kwargs: Any,
     ) -> str:
+        if not self.is_available:
+            raise RuntimeError("Claude is not available — no API key configured. Set CLAUDE_API_KEY or use a built-in prompt.")
         content: list[dict[str, Any]] = [{"type": "text", "text": user_prompt}]
         for path in image_paths:
             with open(path, "rb") as f:
@@ -81,6 +83,8 @@ class ClaudeClient:
         retry=retry_if_exception_type((httpx.TimeoutException, httpx.HTTPStatusError)),
     )
     async def generate_text(self, system_prompt: str, user_prompt: str, **kwargs: Any) -> str:
+        if not self.is_available:
+            raise RuntimeError("Claude is not available — no API key configured.")
         payload: dict[str, Any] = {
             "model": kwargs.get("model", self.model),
             "max_tokens": kwargs.get("max_tokens", self.max_tokens),
