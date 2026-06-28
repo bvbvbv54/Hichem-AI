@@ -3,7 +3,7 @@
 A production-ready platform that extracts product images from e-commerce supplier sites (Alibaba, AliExpress, 1688.com, and more) and generates premium marketing imagery with built-in prompts. Designed for 4 vCPU / 8 GB RAM single-server deployment.
 
 ```
-User Links → Acquisition Pipeline → Image Extraction → Image Generation → Storage
+User Links → Acquisition Pipeline → Image Extraction → Image Generation → R2 Cloudflare Storage → Export (ZIP / Google Drive)
 ```
 
 ---
@@ -46,7 +46,17 @@ Scrapfly (CN) → Page Validity Check → Domain-Specific Extractor → Generic 
 - When all keys are exhausted (`429` + `remaining=0`), workers enter a wait loop (poll every 5 min, max 24h) and send a notification
 - Adding a new key clears the quota-exhausted flag and resumes waiting workers
 
-### 4. Placeholder Reject Filter
+### 4. R2 Cloudflare Storage (`services/storage/r2.py`)
+
+All scraped and AI-generated images are uploaded to Cloudflare R2 (S3-compatible) immediately after acquisition/generation. Each asset stores a 7-day presigned URL in its metadata for downstream export. R2 credentials are configured as module-level constants in `r2.py`.
+
+### 5. Image Export
+
+Images can be exported via two endpoints under `/api/v1/export/`:
+- **ZIP download** (`GET /export/project/{project_id}/zip`) — streams a ZIP archive organized by product and image type (scraped vs AI-generated), falling back to local storage when R2 is unreachable
+- **Google Drive** (`POST /export/project/{project_id}/drive-export`) — uploads to a structured Drive folder hierarchy using a service account
+
+### 6. Placeholder Reject Filter
 
 Known-bad SHA256 hashes prevent non-product images from entering the pipeline:
 
@@ -62,9 +72,9 @@ Add new hashes to `image_downloader._KNOWN_REJECTED_HASHES` or the `global_rejec
 
 | # | Prompt | Site | Problem | Approach |
 | |---|--------|------|---------|----------|
-| 1 | **Ban List** | jd.com, taobao.com | CAPTCHA blocks all extraction | Add to domain ban list at URL level — fail fast with clear reason |
-| 2 | **Temu** | temu.com | CAPTCHA on all automated access | Implement realistic CAPTCHA mitigation — session reuse, rate limiting, or honest failure |
-| 3 | **Final Validation** | All sites | Run all fixes end-to-end | Run `AcquisitionPipeline.run()` against live URLs for all fixed sites simultaneously |
+| 1 | **Backfill R2 URLs** | All | 5 legacy products exist in DB without R2 URLs | Write a one-off task to re-upload existing local assets to R2 |
+| 2 | **Drive Auth UX** | Settings | Service account upload requires file-based config | Add a web UI for Drive credential upload |
+| 3 | **Temu** | temu.com | CAPTCHA on all automated access | Implement realistic CAPTCHA mitigation — session reuse, rate limiting, or honest failure |
 
 ---
 
@@ -76,6 +86,9 @@ All via environment variables (see `.env.example`).
 - `API_KEY` — API gateway authentication
 - `DATABASE_URL` — PostgreSQL connection string
 - `SCRAPFLY_API_KEY` (or DB-managed) — Scrapfly for CN site access
+
+### R2 (Cloudflare)
+- `R2_ACCOUNT_ID`, `R2_ACCESS_KEY`, `R2_SECRET_KEY` — Cloudflare R2 credentials (configured in `services/storage/r2.py`)
 
 ### Image Providers
 - `IMAGE_PROVIDER_API_KEY` — Replicate / StabilityAI / OpenAI (for generation)
@@ -145,8 +158,9 @@ image-factory/
 │   │   └── browser_client.py    # Playwright fallback
 │   ├── claude/             # Reserved for future LLM prompt enhancement
 │   ├── nano_banana/        # Image generation providers
-│   ├── storage/            # Storage backends (local, S3)
-│   ├── delivery/           # Delivery backends (local, S3, webhook)
+│   ├── storage/            # Storage backends (local, R2 S3-compatible)
+│   ├── delivery/           # Delivery backends (local, webhook)
+│   ├── reference_scoring.py # Reference image scoring for selection
 │   ├── extractor/          # Product URL data parsing
 │   └── intelligence/       # Profiles, rate limiting, captcha management
 ├── database/               # SQLAlchemy models & migrations

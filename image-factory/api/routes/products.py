@@ -34,23 +34,7 @@ router = APIRouter()
 
 
 def _check_drive_readiness() -> tuple[bool, str]:
-    """Check if Google Drive is configured and ready for uploads.
-    Returns (ready: bool, message: str).
-    """
-    if not settings.google_drive_auto_upload:
-        return True, ""
-    sa_dir = Path(settings.google_drive_credentials_path).parent
-    sa_path = sa_dir / "service_account.json"
-    if not sa_path.exists():
-        return False, "Google Drive service account not configured. Upload service account JSON in Settings > Google Drive before proceeding."
-    try:
-        data = json.loads(sa_path.read_text())
-        if not data.get("client_email"):
-            return False, "Google Drive service account file is missing 'client_email' field."
-        if not data.get("private_key"):
-            return False, "Google Drive service account file is missing 'private_key' field."
-    except (json.JSONDecodeError, OSError) as e:
-        return False, f"Google Drive service account file is invalid: {e}"
+    """Drive is optional — never blocks the primary pipeline."""
     return True, ""
 
 
@@ -594,6 +578,23 @@ async def start_generation(
         url = product.get("url", "")
         if url:
             url_hash = hashlib.sha256(url.encode()).hexdigest()
+            pl_result = await session.execute(
+                select(ProductLink).where(ProductLink.url_hash == url_hash)
+            )
+            pl = pl_result.scalar_one_or_none()
+            if pl:
+                meta = pl.meta or {}
+                if not meta.get("reference_approved"):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"references not approved for {pl.product_name or url[:60]}. Select reference images and approve on the adapt-ref page first."
+                    )
+                selected_ids = meta.get("reference_selected_ids", [])
+                if len(selected_ids) < 3:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"only {len(selected_ids)} reference images for {pl.product_name or url[:60]}. Select at least 3."
+                    )
             await session.execute(
                 update(ProductLink)
                 .where(ProductLink.url_hash == url_hash)

@@ -299,9 +299,51 @@ export const api = {
   getAcquisitionJobs: (params?: { status?: string; limit?: number; offset?: number }) =>
     request<any>(`/acquisition/jobs${buildQuery(params || {})}`),
 
+  // Reference Selection (11C.2 / 11C.4)
+  scoreReferences: (productId: string, referenceCount: number = 3, userId?: string, projectId?: string) =>
+    request<any>(`/products/${productId}/score-references`, {
+      method: "POST",
+      body: JSON.stringify({
+        reference_count: referenceCount,
+        ...(userId ? { user_id: userId } : {}),
+        ...(projectId ? { project_id: projectId } : {}),
+      }),
+    }),
+
+  saveReferenceSelection: (productId: string, selectedAssetIds: string[], autoSelectSuggestedIds: string[], approved: boolean = false) =>
+    request<any>(`/products/${productId}/save-reference-selection`, {
+      method: "POST",
+      body: JSON.stringify({
+        selected_asset_ids: selectedAssetIds,
+        auto_select_suggested_ids: autoSelectSuggestedIds,
+        approved,
+      }),
+    }),
+
+  getReferenceStatus: (productId: string) =>
+    request<any>(`/products/${productId}/reference-status`),
+
   // Intelligence / CAPTCHA
   getCaptchaIntelligence: () => request<any>("/dashboard/captcha"),
 
   // AI Limiter (budget consumption)
   getAiLimiter: () => request<any>("/dashboard/ai-limiter"),
+
+  // Project export (11C.6)
+  exportProjectZip: (projectId: string, projectName?: string) =>
+    request<Blob>(`/export/project/${projectId}/zip?project_name=${encodeURIComponent(projectName || "project")}`, {
+      method: "GET",
+    }).catch(() => {
+      // For blob downloads, fetch directly
+      return fetch(`${API_BASE}/export/project/${projectId}/zip?project_name=${encodeURIComponent(projectName || "project")}`)
+        .then(r => {
+          if (!r.ok) throw new Error("Export failed");
+          return r.blob();
+        });
+    }),
+
+  exportProjectToDrive: (projectId: string, projectName?: string) =>
+    request<any>(`/export/project/${projectId}/drive-export?project_name=${encodeURIComponent(projectName || "project")}`, {
+      method: "POST",
+    }),
 };

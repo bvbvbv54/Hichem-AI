@@ -185,11 +185,22 @@ export interface Notification {
     | "project_completed"
     | "generation_failed"
     | "delivery_completed"
-    | "drive_saved";
+    | "drive_saved"
+    | "scraping_finished"
+    | "scraping_failed";
   title: string;
   message: string;
   read: boolean;
   created_at: string;
+  data?: {
+    product_id?: string;
+    product_name?: string;
+    url?: string;
+    job_id?: string;
+    failure_type?: string;
+    failure_detail?: string;
+    [key: string]: unknown;
+  };
 }
 
 export interface Template {
@@ -257,4 +268,38 @@ export interface SubmitUrlsResponse {
   skipped_banned: number;
   skipped_duplicates: number;
   jobs: { url: string; job_id: string; domain: string }[];
+}
+
+export interface ScoreResponse {
+  product_id: string;
+  product_name: string;
+  reference_count: number;
+  images: ScoredImage[];
+  weights: Record<string, number>;
+  confidence: number;
+  auto_select_ids: string[];
+}
+
+export interface ScoredImage {
+  asset_id: string;
+  filename: string;
+  file_path: string;
+  width: number;
+  height: number;
+  scores: {
+    center: number;
+    chinese: number;
+    quality: number;
+    detail: number;
+  };
+  image_score: number;
+  auto_selected: boolean;
+}
+
+export interface ReferenceStatus {
+  product_id: string;
+  selected_count: number;
+  approved: boolean;
+  locked: boolean;
+  can_generate: boolean;
 }

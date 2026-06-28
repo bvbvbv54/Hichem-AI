@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import {
-  ArrowLeft, ExternalLink, Image, CheckCircle2, XCircle, Clock, AlertTriangle, RefreshCw,
+  ArrowLeft, ExternalLink, Image, CheckCircle2, XCircle, Clock, AlertTriangle, RefreshCw, Calendar,
 } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
@@ -24,8 +24,9 @@ const statusColors: Record<string, string> = {
   error: "bg-red-100 text-red-800",
 };
 
-function ImageThumb({ src, label }: { src: string; label: string }) {
+function ImageThumb({ src, r2Url, label }: { src: string; r2Url?: string; label: string }) {
   const [error, setError] = useState(false);
+  const imgSrc = r2Url || src;
   if (error) {
     return (
       <div className="aspect-square rounded-lg bg-muted flex items-center justify-center text-xs text-muted-foreground">
@@ -36,8 +37,9 @@ function ImageThumb({ src, label }: { src: string; label: string }) {
   return (
     <div className="space-y-1.5">
       <div className="aspect-square rounded-lg overflow-hidden bg-muted border">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
-          src={src}
+          src={imgSrc}
           alt={label}
           className="w-full h-full object-cover"
           onError={() => setError(true)}
@@ -83,6 +85,16 @@ export default function ProductDetailPage() {
   }
 
   const { product, scraped_images, generated_images, jobs } = data;
+  const createdDate = product.created_at
+    ? new Date(product.created_at).toLocaleDateString("en-US", {
+        year: "numeric", month: "long", day: "numeric",
+      })
+    : null;
+  const updatedDate = product.updated_at
+    ? new Date(product.updated_at).toLocaleDateString("en-US", {
+        year: "numeric", month: "long", day: "numeric",
+      })
+    : null;
 
   return (
     <div className="space-y-6">
@@ -103,6 +115,21 @@ export default function ProductDetailPage() {
               {product.url?.substring(0, 80)}...
               <ExternalLink className="h-3 w-3" />
             </a>
+            {/* Real persisted date */}
+            <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
+              {createdDate && (
+                <span className="flex items-center gap-1">
+                  <Calendar className="h-3 w-3" />
+                  Created: {createdDate}
+                </span>
+              )}
+              {updatedDate && updatedDate !== createdDate && (
+                <span className="flex items-center gap-1">
+                  <RefreshCw className="h-3 w-3" />
+                  Updated: {updatedDate}
+                </span>
+              )}
+            </div>
           </div>
         </div>
         <Badge variant="outline" className={statusColors[product.status] || ""}>
@@ -147,6 +174,7 @@ export default function ProductDetailPage() {
                 <ImageThumb
                   key={img.id}
                   src={`/api/v1/assets/${img.id}/file`}
+                  r2Url={img.r2_url}
                   label={img.filename}
                 />
               ))}
@@ -172,6 +200,7 @@ export default function ProductDetailPage() {
                 <ImageThumb
                   key={img.id}
                   src={`/api/v1/assets/${img.id}/download`}
+                  r2Url={img.r2_url}
                   label={img.filename}
                 />
               ))}

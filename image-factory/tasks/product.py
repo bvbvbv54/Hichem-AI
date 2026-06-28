@@ -25,6 +25,7 @@ from database.models.product_link import ProductLink
 from models.enums import JobStatus
 from services.event_bus import publish, EventType, PipelineEvent
 from services.time_estimator import TimeEstimator
+from services.notifications import send_notification, NotificationLevel
 from PIL import Image as PILImage
 
 logger = get_logger(__name__)
@@ -168,6 +169,7 @@ async def _execute_product_pipeline(self: Any, job_id: str, url: str, project_na
 
         from services.acquisition import AcquisitionPipeline, AcquisitionJob
         from services.storage.local import LocalStorage
+        from services.storage.r2 import get_r2_storage
         from services.admin_notifier import get_notifier
         from services.intelligence.orchestrator import IntelligenceOrchestrator
         from services.intelligence.models import ChallengeType, IntelligenceEventType
@@ -270,12 +272,32 @@ async def _execute_product_pipeline(self: Any, job_id: str, url: str, project_na
             deduped_count = len(saved_paths)
             await _update_product_link_status(url, "scraped", scraped_image_count=deduped_count)
 
+            # Upload scraped images to Cloudflare R2 (primary storage)
+            r2_results: list[dict] = []
+            product_link_id = await _get_product_link_id(url)
+            try:
+                r2 = get_r2_storage()
+                for sp in saved_paths:
+                    sp_path = Path(sp)
+                    if not sp_path.exists():
+                        continue
+                    r2_result = await r2.upload_file(
+                        local_path=sp_path,
+                        project_id=project_name or "default",
+                        product_id=product_link_id or job_id,
+                        category="scraped",
+                    )
+                    r2_results.append(r2_result)
+                logger.info("r2_scraped_uploaded", product=product_name, count=len(r2_results))
+            except Exception as r2_err:
+                logger.warning("r2_scraped_upload_failed", error=str(r2_err))
+
             # Fix: create Asset records for each kept image so detail page can find them
             if saved_paths:
                 async with async_session() as asset_session:
                     from database.repository import AssetRepository
                     asset_repo = AssetRepository(asset_session)
-                    for sp in saved_paths:
+                    for idx, sp in enumerate(saved_paths):
                         sp_path = Path(sp)
                         if not sp_path.exists():
                             continue
@@ -291,6 +313,10 @@ async def _execute_product_pipeline(self: Any, job_id: str, url: str, project_na
                             file_size = 0
                         ext = sp_path.suffix.lower().lstrip(".")
                         mime = f"image/{ext}" if ext else "image/png"
+                        asset_meta = {"type": "scraped"}
+                        if idx < len(r2_results):
+                            asset_meta["r2_url"] = r2_results[idx]["url"]
+                            asset_meta["r2_key"] = r2_results[idx]["key"]
                         await asset_repo.create({
                             "id": str(uuid.uuid4()),
                             "job_id": job_id,
@@ -301,7 +327,7 @@ async def _execute_product_pipeline(self: Any, job_id: str, url: str, project_na
                             "width": width,
                             "height": height,
                             "alt_text": product_name or "",
-                            "meta": {"type": "scraped"},
+                            "meta": asset_meta,
                         })
 
             if deduped_count == 0:
@@ -359,7 +385,6 @@ async def _execute_product_pipeline(self: Any, job_id: str, url: str, project_na
                                 job_id=job_id,
                                 data={"product_name": product_name, "folder_url": drive_folder_url, "file_count": len(saved_paths)},
                             ))
-                            from services.notifications import send_notification, NotificationLevel
                             await send_notification(
                                 user_id="",
                                 title="Drive: Images Saved",
@@ -412,6 +437,25 @@ async def _execute_product_pipeline(self: Any, job_id: str, url: str, project_na
                 },
             ))
 
+            # 11C.2: Link target controlled by getProductDetailUrl() in dashboard/src/lib/utils.ts
+            product_link_id = await _get_product_link_id(url)
+            if product_link_id:
+                await send_notification(
+                    user_id="",
+                    title="Scraping Complete",
+                    message=f"Product '{product_name}' finished scraping — ready for validation",
+                    event_type="scraping_finished",
+                    level=NotificationLevel.SUCCESS,
+                    project_id=project_name,
+                    run_id=job_id,
+                    data={
+                        "product_id": product_link_id,
+                        "product_name": product_name,
+                        "url": url,
+                        "job_id": job_id,
+                    },
+                )
+
             if parent_batch_id:
                 track_key = f"batch:{parent_batch_id}:track"
                 await redis_conn.hincrby(track_key, "completed", 1)
@@ -455,6 +499,26 @@ async def _execute_product_pipeline(self: Any, job_id: str, url: str, project_na
                 raise self.retry(exc=exc, countdown=backoff)
 
             await _mark_job_failed(job_id, failure_detail, failure_type)
+
+            # 11C.2: Link target controlled by getProductDetailUrl() in dashboard/src/lib/utils.ts
+            product_link_id = await _get_product_link_id(url)
+            if product_link_id:
+                await send_notification(
+                    user_id="",
+                    title="Scraping Failed",
+                    message=failure_detail or str(exc),
+                    event_type="scraping_failed",
+                    level=NotificationLevel.ERROR,
+                    project_id=project_name,
+                    run_id=job_id,
+                    data={
+                        "product_id": product_link_id,
+                        "url": url,
+                        "job_id": job_id,
+                        "failure_type": failure_type or "unknown",
+                        "failure_detail": failure_detail or str(exc),
+                    },
+                )
 
             if parent_batch_id:
                 track_key = f"batch:{parent_batch_id}:track"
@@ -551,6 +615,17 @@ async def _update_job_status(job_id: str, status: JobStatus, **extra):
     async with async_session() as session:
         repo = JobRepository(session)
         await repo.update_status(job_id, status, **extra)
+
+
+async def _get_product_link_id(url: str) -> str:
+    try:
+        async with async_session() as session:
+            url_hash = hashlib.sha256(url.encode()).hexdigest()
+            result = await session.execute(select(ProductLink.id).where(ProductLink.url_hash == url_hash))
+            row = result.one_or_none()
+            return row[0] if row else ""
+    except Exception:
+        return ""
 
 
 async def _mark_job_failed(job_id: str, error_message: str, failure_type: str = "unknown"):

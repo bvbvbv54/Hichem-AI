@@ -7,8 +7,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { CheckCheck, Bell, BellOff, CheckCircle2, XCircle, Loader2, ArrowLeft, Cloud } from "lucide-react";
-import { formatDateTime, statusLabel } from "@/lib/utils";
+import { CheckCheck, Bell, BellOff, CheckCircle2, XCircle, Loader2, ArrowLeft, Cloud, AlertCircle, Sparkles } from "lucide-react";
+import { formatDateTime, statusLabel, getProductDetailUrl } from "@/lib/utils";
 import Link from "next/link";
 
 const typeIcons: Record<string, any> = {
@@ -19,6 +19,8 @@ const typeIcons: Record<string, any> = {
   generation_failed: XCircle,
   delivery_completed: CheckCircle2,
   drive_saved: Cloud,
+  scraping_finished: Sparkles,
+  scraping_failed: AlertCircle,
 };
 
 const typeColors: Record<string, string> = {
@@ -29,6 +31,8 @@ const typeColors: Record<string, string> = {
   generation_failed: "text-destructive",
   delivery_completed: "text-cyan-500",
   drive_saved: "text-green-500",
+  scraping_finished: "text-purple-500",
+  scraping_failed: "text-orange-500",
 };
 
 export default function NotificationsPage() {
@@ -106,6 +110,15 @@ export default function NotificationsPage() {
                     <p className={`text-sm ${!n.read ? "font-semibold" : ""}`}>{n.title}</p>
                     <p className="text-xs text-muted-foreground mt-0.5">{n.message}</p>
                     <p className="text-xs text-muted-foreground/60 mt-1">{formatDateTime(n.created_at)}</p>
+                    {(n.type === "scraping_finished" || n.type === "scraping_failed") && n.data?.product_id && (
+                      <Link
+                        href={getProductDetailUrl(n.data.product_id)}
+                        className="text-xs text-primary hover:underline mt-1 inline-block"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        View product →
+                      </Link>
+                    )}
                   </div>
                   {!n.read && (
                     <span className="h-2 w-2 rounded-full bg-primary shrink-0 mt-2" />

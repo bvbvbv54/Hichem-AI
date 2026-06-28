@@ -162,6 +162,8 @@ async def get_product_detail(
                 continue
             meta = asset.meta or {}
             is_scraped = meta.get("type") == "scraped" or "scraped" in (asset.filename or "")
+            asset_meta = asset.meta or {}
+            r2_url = asset_meta.get("r2_url", "")
             img_info = {
                 "id": asset.id,
                 "job_id": asset.job_id,
@@ -172,6 +174,7 @@ async def get_product_detail(
                 "width": asset.width,
                 "height": asset.height,
                 "alt_text": asset.alt_text,
+                "r2_url": r2_url,
                 "created_at": asset.created_at.isoformat() if asset.created_at else None,
             }
             target_set = seen_scraped_paths if is_scraped else seen_generated_paths

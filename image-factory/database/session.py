@@ -53,6 +53,9 @@ async def init_db() -> None:
                 from database.models.product_link import ProductLink  # noqa
                 from database.models.notification import Notification  # noqa
                 from database.models.setting import Setting  # noqa
+                from database.models.feature_cache import FeatureCache  # noqa
+                from database.models.correction_event import CorrectionEvent  # noqa
+                from database.models.learning_weight import LearningWeight  # noqa
 
                 await conn.run_sync(Base.metadata.create_all)
             return

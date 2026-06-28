@@ -18,6 +18,7 @@ from database.session import async_session
 from database.repository import JobRepository, AssetRepository
 from models.enums import JobStatus
 from services.storage.local import LocalStorage
+from services.storage.r2 import get_r2_storage
 from services.event_bus import publish, EventType, PipelineEvent
 
 logger = get_logger(__name__)
@@ -99,6 +100,7 @@ async def _execute_generation(job_id: str):
             asset_repo = AssetRepository(session)
             from services.storage.local import LocalStorage
             storage = LocalStorage()
+            r2 = get_r2_storage()
 
             for idx, result in enumerate(results):
                 filename = f"{job_id}_{idx+1}.png"
@@ -109,6 +111,23 @@ async def _execute_generation(job_id: str):
                     project_name=job.project_name or "",
                 )
 
+                asset_meta = dict(result.meta or {})
+                r2_url = ""
+                try:
+                    r2_result = await r2.upload_file(
+                        local_path=storage_result.file_path,
+                        project_id=job.project_name or "default",
+                        product_id=job_id,
+                        category="ai-generated",
+                        filename=filename,
+                        content_type=storage_result.mime_type,
+                    )
+                    r2_url = r2_result["url"]
+                    asset_meta["r2_url"] = r2_result["url"]
+                    asset_meta["r2_key"] = r2_result["key"]
+                except Exception as r2_err:
+                    logger.warning("r2_gen_upload_failed", job_id=job_id, error=str(r2_err))
+
                 asset_data = {
                     "job_id": job_id,
                     "filename": filename,
@@ -118,7 +137,7 @@ async def _execute_generation(job_id: str):
                     "mime_type": storage_result.mime_type,
                     "width": storage_result.width,
                     "height": storage_result.height,
-                    "meta": result.meta,
+                    "meta": asset_meta,
                 }
                 await asset_repo.create(asset_data)
 
@@ -212,6 +231,7 @@ async def _execute_bulk_generation(parent_job_id: str, batch_id: str, num_images
         await repo.update(parent_job_id, {"meta": {**parent_meta, "total": total}})
 
         storage = LocalStorage()
+        r2 = get_r2_storage()
         from services.nano_banana.client import NanoBananaClient
         from services.nano_banana.models import GenerationRequest
         image_provider = NanoBananaClient()
@@ -293,6 +313,20 @@ async def _execute_bulk_generation(parent_job_id: str, batch_id: str, num_images
                                 filename=filename,
                                 project_name=parent.project_name or "",
                             )
+                            asset_meta = {"description": description, "prompt": final_prompt, "provider": "replicate"}
+                            try:
+                                r2_result = await r2.upload_file(
+                                    local_path=storage_result.file_path,
+                                    project_id=parent.project_name or "default",
+                                    product_id=url.split("/")[-1][:36],
+                                    category="ai-generated",
+                                    filename=filename,
+                                    content_type=storage_result.mime_type,
+                                )
+                                asset_meta["r2_url"] = r2_result["url"]
+                                asset_meta["r2_key"] = r2_result["key"]
+                            except Exception as r2_err:
+                                logger.warning("r2_bulk_gen_upload_failed", error=str(r2_err))
                             await asset_repo.create({
                                 "job_id": child_job.id,
                                 "filename": filename,
@@ -302,7 +336,7 @@ async def _execute_bulk_generation(parent_job_id: str, batch_id: str, num_images
                                 "mime_type": storage_result.mime_type,
                                 "width": storage_result.width,
                                 "height": storage_result.height,
-                                "meta": {"description": description, "prompt": final_prompt, "provider": "replicate"},
+                                "meta": asset_meta,
                             })
 
                 except Exception as e:

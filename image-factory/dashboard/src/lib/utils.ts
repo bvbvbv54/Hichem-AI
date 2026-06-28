@@ -62,6 +62,10 @@ export function statusColor(status: string): string {
   return map[status] || "text-muted-foreground";
 }
 
+export function getProductDetailUrl(productId: string): string {
+  return `/products/${productId}/adapt-ref`;
+}
+
 export function statusLabel(status: string): string {
   return status
     .replace(/_/g, " ")
