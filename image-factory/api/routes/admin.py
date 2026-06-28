@@ -109,30 +109,24 @@ async def queue_status(
     redis: aioredis.Redis = Depends(get_redis),
 ):
     paused = await redis.get("queue:paused")
-    high_priority = await session.execute(
-        select(func.count(Job.id)).where(
-            and_(Job.status == "queued", Job.is_bulk_item == True)
-        )
-    )
-    normal_queue = await session.execute(
-        select(func.count(Job.id)).where(
-            and_(Job.status == "queued", Job.is_bulk_item == True)
-        )
-    )
-    active = await session.execute(
+    processing = await session.execute(
         select(func.count(Job.id)).where(Job.status == "processing")
+    )
+    pending = await session.execute(
+        select(func.count(Job.id)).where(Job.status == "pending")
+    )
+    failed = await session.execute(
+        select(func.count(Job.id)).where(Job.status == "failed")
     )
     dead_letter = await session.execute(
         select(func.count(Job.id)).where(and_(Job.status == "failed", Job.retry_count >= Job.max_retries))
     )
 
-    hp = high_priority.scalar() or 0
-    nq = normal_queue.scalar() or 0
     return {
         "paused": paused is not None and paused == b"1",
-        "high_priority_depth": min(hp, 5),  # approximate — meta priority JSONB filtering deferred
-        "normal_priority_depth": nq,
-        "active_workers": active.scalar() or 0,
+        "processing": processing.scalar() or 0,
+        "pending": pending.scalar() or 0,
+        "failed": failed.scalar() or 0,
         "dead_letter_count": dead_letter.scalar() or 0,
     }
 
@@ -151,15 +145,12 @@ async def resume_queue(redis: aioredis.Redis = Depends(get_redis)):
     return {"status": "resumed"}
 
 
-@router.post("/jobs/retry-all-failed", summary="Requeue all failed jobs from last 24h")
+@router.post("/jobs/retry-all-failed", summary="Requeue all failed jobs")
 async def retry_all_failed(
     session: AsyncSession = Depends(get_session),
 ):
-    cutoff = datetime.utcnow() - timedelta(hours=24)
     result = await session.execute(
-        select(Job).where(
-            and_(Job.status == "failed", Job.updated_at >= cutoff)
-        )
+        select(Job).where(Job.status == "failed")
     )
     failed_jobs = list(result.scalars().all())
 
@@ -396,9 +387,22 @@ async def toggle_storage(
     return {"status": "updated", "storage_enabled": enabled}
 
 
+async def _resolve_key_status(key: str, ok: bool, remaining: int, redis: aioredis.Redis) -> str:
+    """Determine Scrapfly key status: ACTIVE, QUOTA_EXHAUSTED, BANNED, or UNREACHABLE."""
+    key_short = key[:20]
+    banned = await redis.get(f"scrapfly:banned:{key_short}")
+    if banned:
+        return "BANNED"
+    if not ok:
+        return "UNREACHABLE"
+    if remaining <= 0:
+        return "QUOTA_EXHAUSTED"
+    return "ACTIVE"
+
 @router.get("/scrapfly/usage", summary="Get Scrapfly credit usage")
 async def get_scrapfly_usage(
     session: AsyncSession = Depends(get_session),
+    redis: aioredis.Redis = Depends(get_redis),
 ):
     COST_PER_SCRAPE = 12
     COST_PER_PRODUCT = 12
@@ -438,25 +442,25 @@ async def get_scrapfly_usage(
 
     per_key_remaining = []
     per_key_summary = []
-    for key, result in zip(keys, results):
-        short = key[:20]
+    for idx, (key, result) in enumerate(zip(keys, results)):
+        safe_label = f"Key-{idx + 1}"
         key_remaining = result["remaining"]
         key_products = max(0, key_remaining // COST_PER_PRODUCT)
+        key_status = await _resolve_key_status(key, result["ok"], key_remaining, redis)
         per_key_remaining.append({
-            "key_preview": short + "...",
-            "full_key": key,
+            "safe_label": safe_label,
             "used": result["used"],
             "remaining": result["remaining"],
             "estimated_scrapes": key_products,
             "cost_per_scrape_estimate": COST_PER_SCRAPE,
-            "status": "tracked" if result["ok"] else "unreachable",
+            "status": key_status,
         })
         per_key_summary.append({
-            "key": short + "...",
+            "label": safe_label,
             "used": result["used"],
             "remaining": result["remaining"],
             "estimated_scrapes": key_products,
-            "status": "tracked" if result["ok"] else "unreachable",
+            "status": key_status,
         })
 
     return {
@@ -504,6 +508,7 @@ async def get_scrapfly_rotation_metrics():
 @router.get("/scrapfly/keys", summary="List all Scrapfly API keys")
 async def list_scrapfly_keys(
     session: AsyncSession = Depends(get_session),
+    redis: aioredis.Redis = Depends(get_redis),
 ):
     import asyncio
     import httpx
@@ -512,7 +517,6 @@ async def list_scrapfly_keys(
     keys = await get_all_keys(session)
 
     async def fetch_key_info(key: str) -> dict:
-        short = key[:20]
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 resp = await client.get(
@@ -524,13 +528,23 @@ async def list_scrapfly_keys(
                     usage = data.get("subscription", {}).get("usage", {}).get("scrape", {})
                     used = usage.get("current", 0)
                     remaining = usage.get("remaining", 0)
-                    return {"key_preview": short + "...", "full_key": key, "used": used, "remaining": remaining, "status": "active"}
+                    return {"ok": True, "used": used, "remaining": remaining}
         except Exception as e:
-            logger.warning("scrapfly_key_info_error", key=short, error=str(e))
-        return {"key_preview": short + "...", "full_key": key, "used": 0, "remaining": None, "status": "unreachable"}
+            logger.warning("scrapfly_key_info_error", key=key[:20], error=str(e))
+        return {"ok": False, "used": 0, "remaining": None}
 
     results = await asyncio.gather(*[fetch_key_info(k) for k in keys])
-    return {"keys": results, "total": len(results)}
+    enriched = []
+    for idx, (key, r) in enumerate(zip(keys, results)):
+        safe_label = f"Key-{idx + 1}"
+        key_status = await _resolve_key_status(key, r["ok"], r["remaining"] or 0, redis)
+        enriched.append({
+            "safe_label": safe_label,
+            "used": r["used"],
+            "remaining": r["remaining"],
+            "status": key_status,
+        })
+    return {"keys": enriched, "total": len(enriched)}
 
 
 @router.post("/scrapfly/keys", summary="Add a Scrapfly API key")
@@ -554,13 +568,43 @@ async def add_scrapfly_key(
     except Exception:
         pass
 
+    # Auto-verify the key by calling Scrapfly API
+    import httpx
+    verified_status = "UNKNOWN"
+    usage_info = {}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                f"https://api.scrapfly.io/account?key={key}",
+                headers={"Accept": "application/json"},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                usage = data.get("subscription", {}).get("usage", {}).get("scrape", {})
+                used = usage.get("current", 0)
+                remaining = usage.get("remaining", 0)
+                if remaining > 0:
+                    verified_status = "ACTIVE"
+                else:
+                    verified_status = "QUOTA_EXHAUSTED"
+                usage_info = {"used": used, "remaining": remaining}
+                logger.info("scrapfly_key_verified_active", key=key[:20], remaining=remaining)
+            else:
+                verified_status = "UNREACHABLE"
+                logger.warning("scrapfly_key_verification_failed", key=key[:20], status=resp.status_code)
+    except Exception as e:
+        verified_status = "UNREACHABLE"
+        logger.warning("scrapfly_key_verification_error", key=key[:20], error=str(e))
+
     # Initialize rotation state for the new key
     try:
-        from services.scrapfly_rotation import KeyStateManager, STATE_KEY, DEFAULT_CREDITS
+        from services.scrapfly_rotation import KeyStateManager, DEFAULT_CREDITS
         mgr = KeyStateManager(redis)
         key_short = key[:20]
         from services.scrapfly_rotation import KeyState
-        state = KeyState(key=key_short, status="UNKNOWN", estimated_credits_remaining=DEFAULT_CREDITS)
+        credits = usage_info.get("remaining", DEFAULT_CREDITS) if verified_status in ("ACTIVE", "QUOTA_EXHAUSTED") else DEFAULT_CREDITS
+        rotation_status = "ACTIVE" if verified_status in ("ACTIVE", "QUOTA_EXHAUSTED") else "UNKNOWN"
+        state = KeyState(key=key_short, status=rotation_status, estimated_credits_remaining=credits)
         await mgr._save_state(state)
         logger.info("scrapfly_rotation_state_initialized_for_new_key", key=key_short)
     except Exception as e:
@@ -573,7 +617,29 @@ async def add_scrapfly_key(
     except Exception:
         pass
 
-    return {"status": "added", "key_preview": key[:20] + "...", "is_new": is_new}
+    return {
+        "status": "added",
+        "is_new": is_new,
+        "verified": verified_status,
+        "usage": usage_info,
+    }
+
+
+async def _resolve_key_by_label(safe_label: str, session: AsyncSession) -> str | None:
+    """Resolve a safe label (e.g. 'Key-3') to the actual key value from the DB."""
+    if not safe_label.startswith("Key-"):
+        return None
+    try:
+        idx = int(safe_label.split("-", 1)[1]) - 1
+        if idx < 0:
+            return None
+    except ValueError:
+        return None
+    from services.scrapfly_key_manager import get_all_keys
+    keys = await get_all_keys(session)
+    if idx >= len(keys):
+        return None
+    return keys[idx]
 
 
 @router.delete("/scrapfly/keys", summary="Remove a Scrapfly API key")
@@ -582,24 +648,58 @@ async def remove_scrapfly_key(
     session: AsyncSession = Depends(get_session),
     redis: aioredis.Redis = Depends(get_redis),
 ):
-    key = body.get("key", "").strip()
+    key_id = body.get("key_id", "").strip()
+    if not key_id:
+        raise HTTPException(status_code=400, detail="key_id is required (e.g. 'Key-1')")
+    key = await _resolve_key_by_label(key_id, session)
     if not key:
-        raise HTTPException(status_code=400, detail="key is required")
+        raise HTTPException(status_code=404, detail=f"No key found for '{key_id}'")
     from services.scrapfly_key_manager import remove_key
 
     await remove_key(key, session)
 
-    # Clean up rotation state for the removed key
+    # Clean up rotation state and banned flag for the removed key
     try:
         from services.scrapfly_rotation import STATE_KEY, RESERVATION_KEY
         key_short = key[:20]
         await redis.delete(f"{STATE_KEY}{key_short}")
         await redis.delete(f"{RESERVATION_KEY}{key_short}")
+        await redis.delete(f"scrapfly:banned:{key_short}")
         logger.info("scrapfly_rotation_state_cleaned_for_removed_key", key=key_short)
     except Exception as e:
         logger.warning("scrapfly_rotation_cleanup_failed", error=str(e))
 
-    return {"status": "removed", "key_preview": key[:20] + "..."}
+    return {"status": "removed", "key_id": key_id}
+
+
+@router.post("/scrapfly/keys/{key_id}/ban", summary="Mark a Scrapfly key as banned")
+async def ban_scrapfly_key(
+    key_id: str,
+    session: AsyncSession = Depends(get_session),
+    redis: aioredis.Redis = Depends(get_redis),
+):
+    key = await _resolve_key_by_label(key_id, session)
+    if not key:
+        raise HTTPException(status_code=404, detail=f"No key found for '{key_id}'")
+    key_short = key[:20]
+    await redis.set(f"scrapfly:banned:{key_short}", "1")
+    logger.info("scrapfly_key_banned", key=key_short)
+    return {"status": "banned", "key_id": key_id}
+
+
+@router.post("/scrapfly/keys/{key_id}/unban", summary="Unmark a banned Scrapfly key")
+async def unban_scrapfly_key(
+    key_id: str,
+    session: AsyncSession = Depends(get_session),
+    redis: aioredis.Redis = Depends(get_redis),
+):
+    key = await _resolve_key_by_label(key_id, session)
+    if not key:
+        raise HTTPException(status_code=404, detail=f"No key found for '{key_id}'")
+    key_short = key[:20]
+    await redis.delete(f"scrapfly:banned:{key_short}")
+    logger.info("scrapfly_key_unbanned", key=key_short)
+    return {"status": "unbanned", "key_id": key_id}
 
 
 @router.delete("/data/clear-all", summary="Clear all scraped data, products, jobs, and assets for a fresh start")

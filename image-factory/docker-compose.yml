@@ -10,7 +10,7 @@ services:
     container_name: imagefactory-postgres
     environment:
       POSTGRES_USER: imagefactory
-      POSTGRES_PASSWORD: imagefactory
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-imagefactory}
       POSTGRES_DB: imagefactory
     ports:
       - "5432:5432"
@@ -60,7 +60,7 @@ services:
       - "8000:8000"
     environment:
       - APP_ENV=production
-      - DATABASE_URL=postgresql+asyncpg://imagefactory:imagefactory@postgres:5432/imagefactory
+      - DATABASE_URL=postgresql+asyncpg://imagefactory:${POSTGRES_PASSWORD:-imagefactory}@postgres:5432/imagefactory
       - REDIS_URL=redis://redis:6379/0
       - CELERY_BROKER_URL=redis://redis:6379/1
       - CELERY_RESULT_BACKEND=redis://redis:6379/2
@@ -98,7 +98,7 @@ services:
     container_name: imagefactory-worker
     environment:
       - APP_ENV=production
-      - DATABASE_URL=postgresql+asyncpg://imagefactory:imagefactory@postgres:5432/imagefactory
+      - DATABASE_URL=postgresql+asyncpg://imagefactory:${POSTGRES_PASSWORD:-imagefactory}@postgres:5432/imagefactory
       - REDIS_URL=redis://redis:6379/0
       - CELERY_BROKER_URL=redis://redis:6379/1
       - CELERY_RESULT_BACKEND=redis://redis:6379/2

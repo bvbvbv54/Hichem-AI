@@ -126,7 +126,7 @@ export default function ProjectDetailPage() {
                           )}
                         </div>
                       </div>
-                      <Link href={`/content/${product.id}`}>
+                       <Link href={`/products/${product.id}`}>
                         <Button variant="outline" size="sm">View</Button>
                       </Link>
                     </div>

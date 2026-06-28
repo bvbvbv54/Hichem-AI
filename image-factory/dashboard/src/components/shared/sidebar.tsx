@@ -13,6 +13,7 @@ import {
   Shield,
   ChevronLeft,
   Bell,
+  Terminal,
 } from "lucide-react";
 import { useUIStore, useNotificationsStore } from "@/lib/store";
 import { Button } from "@/components/ui/button";
@@ -21,11 +22,12 @@ import { Separator } from "@/components/ui/separator";
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/projects", label: "Projects", icon: FolderKanban },
-  { href: "/upload", label: "Upload", icon: Upload },
+  { href: "/upload", label: "Scrape & AI", icon: Upload },
   { href: "/products", label: "Products", icon: Package },
 ];
 
 const bottomItems = [
+  { href: "/admin", label: "Admin", icon: Terminal },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 

@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
-import redis.asyncio as aioredis
-
 from api.dependencies import get_redis
 from database.session import get_session
 from database.models.job import Job
@@ -239,81 +237,4 @@ async def get_ai_limiter(session: AsyncSession = Depends(get_session)):
     }
 
 
-@router.get("/captcha")
-async def get_captcha_intelligence(redis: aioredis.Redis = Depends(get_redis)):
-    captcha_stats_prefix = "intel:captcha_stats:"
-    now = datetime.utcnow()
-    date_str = now.strftime("%Y-%m-%d")
-    top: list[dict] = []
-    total_today = 0
-    total_all_time = 0
 
-    # Scan keys matching the pattern
-    cursor = 0
-    domains_seen: set[str] = set()
-    while True:
-        cursor, keys = await redis.scan(cursor, match=f"{captcha_stats_prefix}*:*", count=500)
-        for key in keys:
-            k = key.decode() if isinstance(key, bytes) else key
-            parts = k.split(":")
-            if len(parts) >= 3:
-                domain = parts[2]
-                day = parts[3] if len(parts) >= 4 else ""
-                domains_seen.add(domain)
-        if cursor == 0:
-            break
-
-    for domain in sorted(domains_seen):
-        # Get today's count
-        today_key = f"{captcha_stats_prefix}{domain}:{date_str}"
-        today_stats = await redis.hgetall(today_key)
-        today_total = 0
-        if today_stats:
-            for k, v in today_stats.items():
-                key = k.decode() if isinstance(k, bytes) else k
-                val = int(v.decode() if isinstance(v, bytes) else v)
-                if key == "total":
-                    today_total = val
-        total_today += today_total
-
-        # Get 7-day count
-        week_total = 0
-        for i in range(7):
-            d = (now - timedelta(days=i)).strftime("%Y-%m-%d")
-            wk_key = f"{captcha_stats_prefix}{domain}:{d}"
-            wk_stats = await redis.hgetall(wk_key)
-            if wk_stats:
-                for k, v in wk_stats.items():
-                    key = k.decode() if isinstance(k, bytes) else k
-                    val = int(v.decode() if isinstance(v, bytes) else v)
-                    if key == "total":
-                        week_total += val
-
-        if week_total > 0:
-            top.append({"domain": domain, "captcha_count": week_total})
-
-        # Get all-time count for this domain
-        domain_cursor = 0
-        while True:
-            domain_cursor, domain_keys = await redis.scan(domain_cursor, match=f"{captcha_stats_prefix}{domain}:*", count=500)
-            for dk in domain_keys:
-                dk_str = dk.decode() if isinstance(dk, bytes) else dk
-                stats = await redis.hgetall(dk_str)
-                if stats:
-                    for k, v in stats.items():
-                        key = k.decode() if isinstance(k, bytes) else k
-                        val = int(v.decode() if isinstance(v, bytes) else v)
-                        if key == "total":
-                            total_all_time += val
-            if domain_cursor == 0:
-                break
-
-    top.sort(key=lambda x: x["captcha_count"], reverse=True)
-    top = top[:10]
-
-    return {
-        "top_blocking_marketplaces": top,
-        "daily_report": {entry["domain"]: {"total_captchas": entry["captcha_count"]} for entry in top},
-        "total_captchas_today": total_today,
-        "total_captchas_all_time": total_all_time,
-    }

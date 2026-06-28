@@ -282,6 +282,22 @@ export const api = {
 
   // Scrapfly Usage
   getScrapflyUsage: () => request<any>("/admin/scrapfly/usage"),
+  banScrapflyKey: (keyId: string) =>
+    request<any>(`/admin/scrapfly/keys/${keyId}/ban`, { method: "POST" }),
+  unbanScrapflyKey: (keyId: string) =>
+    request<any>(`/admin/scrapfly/keys/${keyId}/unban`, { method: "POST" }),
+
+  // Acquisition pipeline
+  submitUrls: (urls: string[], projectId?: string) =>
+    request<any>("/acquisition/submit", {
+      method: "POST",
+      body: JSON.stringify({ urls, project_id: projectId || "default" }),
+    }),
+
+  getAcquisitionStats: () => request<any>("/acquisition/stats"),
+
+  getAcquisitionJobs: (params?: { status?: string; limit?: number; offset?: number }) =>
+    request<any>(`/acquisition/jobs${buildQuery(params || {})}`),
 
   // Intelligence / CAPTCHA
   getCaptchaIntelligence: () => request<any>("/dashboard/captcha"),

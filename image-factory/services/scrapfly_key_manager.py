@@ -11,78 +11,14 @@ from configs.logging import get_logger
 
 logger = get_logger(__name__)
 
-# Per-key reset dates (YYYY-MM-DD). After this date the key is re-enabled.
-# Update these when a key's billing period resets.
-_KEY_RESET_DATES: dict[str, str] = {
-    "SCRAPFLY_KEY_REDACTED": "2026-08-17",
-    "SCRAPFLY_KEY_REDACTED": "2026-07-17",
-    "SCRAPFLY_KEY_REDACTED": "2026-07-17",
-    "SCRAPFLY_KEY_REDACTED": "2026-07-17",
-    "SCRAPFLY_KEY_REDACTED": "2026-07-27",
-    "SCRAPFLY_KEY_REDACTED": "2026-07-27",
-    "SCRAPFLY_KEY_REDACTED": "2026-07-27",
-    "SCRAPFLY_KEY_REDACTED": "2026-07-27",
-}
-
-_FALLBACK_KEYS = [
-    "SCRAPFLY_KEY_REDACTED",
-    "SCRAPFLY_KEY_REDACTED",
-    "SCRAPFLY_KEY_REDACTED",
-    "SCRAPFLY_KEY_REDACTED",
-    "SCRAPFLY_KEY_REDACTED",
-    "SCRAPFLY_KEY_REDACTED",
-]
-
-# Keys permanently deprecated (wrong account, revoked, etc.) — never revived.
-_PERMANENTLY_DEAD: set[str] = set()
+# Reset-date override per key (optional). Keys not listed use `_infer_reset_date()`.
+_KEY_RESET_DATES: dict[str, str] = {}
 
 
 def _infer_reset_date(key: str) -> str:
     """Infer a plausible reset date for keys without a hardcoded one: 30 days from now."""
     from datetime import datetime, timedelta, timezone
     return (datetime.now(timezone.utc) + timedelta(days=30)).strftime("%Y-%m-%d")
-
-
-def clear_reset_dates_cache() -> None:
-    """Clear the module-level reset dates cache so it refreshes on next load."""
-    global _KEY_RESET_DATES
-    # No-op: _KEY_RESET_DATES is the source of truth.
-    # External caches (e.g. scrapfly_client._RESET_DATES_CACHE) should be cleared separately.
-    pass
-
-DEAD_KEYS: set[str] = {
-    "SCRAPFLY_KEY_REDACTED",
-    "SCRAPFLY_KEY_REDACTED",
-}
-
-
-def _is_key_past_reset(key: str) -> bool:
-    """Check if a key's reset date has passed, meaning it should be re-enabled."""
-    reset_str = _KEY_RESET_DATES.get(key)
-    if not reset_str:
-        return False
-    try:
-        reset_date = datetime.strptime(reset_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-        return datetime.now(timezone.utc) >= reset_date
-    except (ValueError, TypeError):
-        return False
-
-
-def _get_keys_for_date() -> list[str]:
-    """Return fallback keys, excluding permanently dead ones and reviving past-reset keys."""
-    today = datetime.now(timezone.utc)
-    result = []
-    for key in _FALLBACK_KEYS:
-        if key in _PERMANENTLY_DEAD:
-            continue
-        # If the key is in DEAD_KEYS but past its reset date, revive it
-        if key in DEAD_KEYS and _is_key_past_reset(key):
-            logger.info("scrapfly_key_revived_after_reset", key=key[:20])
-            DEAD_KEYS.discard(key)
-            result.append(key)
-        elif key not in DEAD_KEYS:
-            result.append(key)
-    return result
 
 
 async def get_all_keys(session: AsyncSession) -> list[str]:
@@ -95,24 +31,13 @@ async def get_all_keys(session: AsyncSession) -> list[str]:
     for s in settings:
         if not s.value:
             continue
-        if s.value in _PERMANENTLY_DEAD:
-            continue
-        # Revive past-reset keys
-        if s.value in DEAD_KEYS and _is_key_past_reset(s.value):
-            logger.info("scrapfly_key_revived_after_reset_db", key=s.value[:20])
-            DEAD_KEYS.discard(s.value)
-            db_keys.append(s.value)
-        elif s.value not in DEAD_KEYS:
-            db_keys.append(s.value)
-    if db_keys:
-        return db_keys
-    return _get_keys_for_date()
+        db_keys.append(s.value)
+    return db_keys
 
 
 async def add_key(key: str, session: AsyncSession) -> bool:
     from database.models.setting import Setting
     from services.notifications import send_notification
-    from database.session import async_session
 
     key_id = f"scrapfly_key_{key[:16]}"
     existing = await session.execute(
@@ -126,11 +51,6 @@ async def add_key(key: str, session: AsyncSession) -> bool:
         session.add(setting)
         is_new = True
     await session.commit()
-
-    # Revive from dead keys if it was previously marked dead
-    if key in DEAD_KEYS:
-        DEAD_KEYS.discard(key)
-        logger.info("scrapfly_key_removed_from_dead", key=key[:20])
 
     # Notify about the new key
     try:
@@ -204,19 +124,7 @@ async def mark_key_unauthorized(key: str, redis: Any) -> None:
     key_short = key[:20]
     try:
         if redis:
-            # Store the unauthorized status with a TTL until the reset date
-            reset_str = _KEY_RESET_DATES.get(key)
-            if reset_str:
-                try:
-                    reset_date = datetime.strptime(reset_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-                    ttl = int((reset_date - datetime.now(timezone.utc)).total_seconds())
-                    if ttl > 0:
-                        await redis.setex(f"scrapfly:unauthorized:{key_short}", ttl, "1")
-                except (ValueError, TypeError):
-                    await redis.setex(f"scrapfly:unauthorized:{key_short}", 86400 * 31, "1")
-            else:
-                await redis.setex(f"scrapfly:unauthorized:{key_short}", 86400 * 7, "1")
-            DEAD_KEYS.add(key)
+            await redis.setex(f"scrapfly:unauthorized:{key_short}", 86400 * 7, "1")
             logger.info("scrapfly_key_marked_unauthorized", key=key_short)
 
         from services.notifications import send_notification
@@ -242,13 +150,11 @@ async def retry_unauthorized_keys(redis: Any) -> list[str]:
             cursor, keys = await redis.scan(cursor, match="scrapfly:unauthorized:*")
             for k in keys:
                 key_name = k.decode() if isinstance(k, bytes) else k
-                short = key_name.replace("scrapfly:unauthorized:", "")
                 ttl = await redis.ttl(key_name)
                 if ttl <= 0:
                     # TTL expired — remove the flag and revive
                     await redis.delete(key_name)
-                    DEAD_KEYS.discard(short)
-                    revived.append(short)
+                    revived.append(key_name.replace("scrapfly:unauthorized:", ""))
             if cursor == 0:
                 break
         if revived:
@@ -262,8 +168,9 @@ async def get_keys_with_usage(session: AsyncSession, redis: Any) -> list[dict]:
     import time
     keys = await get_all_keys(session)
     result = []
-    for key in keys:
+    for idx, key in enumerate(keys):
         short = key[:20]
+        safe_label = f"Key-{idx + 1}"
         used = 0
         remaining: int | None = None
         try:
@@ -279,8 +186,7 @@ async def get_keys_with_usage(session: AsyncSession, redis: Any) -> list[dict]:
         if remaining is not None:
             estimated_scrapes = max(0, remaining // cost_per_scrape)
         result.append({
-            "key_preview": short + "...",
-            "full_key": key,
+            "safe_label": safe_label,
             "used": used,
             "remaining": remaining,
             "estimated_scrapes": estimated_scrapes,

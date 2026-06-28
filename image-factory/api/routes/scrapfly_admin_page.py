@@ -54,7 +54,7 @@ pre { font-family: monospace; font-size: 0.8rem; }
 
 <script>
 async function api(url, opts) {
-  const resp = await fetch(url, { headers: { 'Content-Type': 'application/json', 'X-API-Key': 'dev-api-key-12345' }, ...opts });
+  const resp = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...opts });
   if (!resp.ok) { const t = await resp.text(); throw new Error(t); }
   return resp.json();
 }
@@ -69,7 +69,7 @@ async function load() {
     const d = await api('/api/v1/admin/scrapfly/usage');
     const pct = d.monthly_budget > 0 ? Math.round((d.total_cost / d.monthly_budget) * 100) : 0;
     const warn = pct > 80 ? 'warn' : '';
-    const keyRows = (d.keys || []).map(k => '<tr><td><code>' + escapeHtml(k.key_preview) + '</code></td><td>' + k.used + '</td><td>' + k.remaining + '</td></tr>').join('');
+    const keyRows = (d.keys || []).map(k => '<tr><td><code>' + escapeHtml(k.safe_label || k.label) + '</code></td><td>' + k.used + '</td><td>' + k.remaining + '</td><td>' + escapeHtml(k.status) + '</td></tr>').join('');
     document.getElementById('app').innerHTML = `
       <div class="grid fade">
         <div class="card ${warn}"><div class="val">${d.total_cost}</div><div class="lbl">Credits Used</div></div>
@@ -82,8 +82,8 @@ async function load() {
 
       <h2>Scrapfly API Keys</h2>
       <div id="key-list">
-        <table class="fade"><thead><tr><th>Key</th><th>Used</th><th>Remaining</th></tr></thead>
-        <tbody>${keyRows || '<tr><td colspan="3" style="text-align:center;color:#a1a1aa;">No keys configured</td></tr>'}</tbody></table>
+        <table class="fade"><thead><tr><th>Key</th><th>Used</th><th>Remaining</th><th>Status</th></tr></thead>
+        <tbody>${keyRows || '<tr><td colspan="4" style="text-align:center;color:#a1a1aa;">No keys configured</td></tr>'}</tbody></table>
       </div>
       <div style="margin-top:0.75rem;">
         <div class="form-row">
@@ -132,7 +132,6 @@ async function retryFailed() {
 }
 
 load();
-setInterval(load, 30000);
 </script>
 </body>
 </html>"""

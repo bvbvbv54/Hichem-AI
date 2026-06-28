@@ -200,3 +200,61 @@ export interface Template {
   suggested_aspect_ratio: string;
   suggested_style: string;
 }
+
+export interface PerSiteSummary {
+  domain: string;
+  support_status: "working" | "known_issues" | "not_supported";
+  total: number;
+  pending: number;
+  scraping: number;
+  scraped: number;
+  completed: number;
+  failed: number;
+  skipped: number;
+  failed_breakdown: Record<string, number>;
+  success_rate: number | null;
+  today_count: number;
+}
+
+export interface AcquisitionStatsResponse {
+  sites: PerSiteSummary[];
+  totals: {
+    total_products: number;
+    today_products: number;
+    pending: number;
+    scraping: number;
+    scraped: number;
+    completed: number;
+    failed: number;
+  };
+}
+
+export interface AcquisitionJob {
+  id: string;
+  job_id: string;
+  url: string;
+  domain: string;
+  site: string;
+  status: string;
+  product_name: string;
+  image_count: number;
+  error_message: string;
+  failure_type: string;
+  created_at: string | null;
+  updated_at: string | null;
+  completed_at: string | null;
+}
+
+export interface AcquisitionJobsResponse {
+  jobs: AcquisitionJob[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface SubmitUrlsResponse {
+  accepted: number;
+  skipped_banned: number;
+  skipped_duplicates: number;
+  jobs: { url: string; job_id: string; domain: string }[];
+}

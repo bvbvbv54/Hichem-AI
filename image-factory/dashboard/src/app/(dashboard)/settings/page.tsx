@@ -13,7 +13,8 @@ import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "@/hooks/use-toast";
-import { Key, Cloud, RefreshCw, Trash2, Eye, EyeOff, CheckCircle2, XCircle, Save, DollarSign, Image, FolderOpen, Zap } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { Key, Cloud, RefreshCw, Trash2, Eye, EyeOff, CheckCircle2, XCircle, Save, DollarSign, Image, FolderOpen, Zap, Ban, ShieldAlert } from "lucide-react";
 
 function DriveCredentialsSection() {
   const [jsonInput, setJsonInput] = useState("");
@@ -375,7 +376,6 @@ function ScrapflyKeysSection() {
   const { data: keysData, isLoading: keysLoading } = useQuery({
     queryKey: ["scrapfly-keys"],
     queryFn: () => fetchKeys(),
-    refetchInterval: 30000,
   });
 
   useEffect(() => {
@@ -408,11 +408,11 @@ function ScrapflyKeysSection() {
     }
   };
 
-  const removeKey = async (key: string) => {
+  const removeKey = async (keyId: string) => {
     try {
       const res = await authFetch("/api/v1/admin/scrapfly/keys", {
         method: "DELETE",
-        body: JSON.stringify({ key }),
+        body: JSON.stringify({ key_id: keyId }),
       });
       if (!res.ok) throw new Error(await res.text());
       toast({ title: "ScrapFly key removed" });
@@ -423,25 +423,59 @@ function ScrapflyKeysSection() {
     }
   };
 
+  const banKey = async (keyId: string) => {
+    try {
+      const res = await authFetch(`/api/v1/admin/scrapfly/keys/${keyId}/ban`, { method: "POST" });
+      if (!res.ok) throw new Error(await res.text());
+      toast({ title: "Key banned", description: "This key will no longer count as working" });
+      queryClient.invalidateQueries({ queryKey: ["scrapfly-keys"] });
+      queryClient.invalidateQueries({ queryKey: ["scrapfly-usage"] });
+    } catch (err: any) {
+      toast({ title: "Failed to ban key", description: err.message, variant: "destructive" });
+    }
+  };
+
+  const unbanKey = async (keyId: string) => {
+    try {
+      const res = await authFetch(`/api/v1/admin/scrapfly/keys/${keyId}/unban`, { method: "POST" });
+      if (!res.ok) throw new Error(await res.text());
+      toast({ title: "Key unbanned" });
+      queryClient.invalidateQueries({ queryKey: ["scrapfly-keys"] });
+      queryClient.invalidateQueries({ queryKey: ["scrapfly-usage"] });
+    } catch (err: any) {
+      toast({ title: "Failed to unban key", description: err.message, variant: "destructive" });
+    }
+  };
+
   if (keysLoading) return <Skeleton className="h-20 w-full" />;
 
   return (
     <div className="space-y-3">
       <div className="space-y-2">
         {keys.map((k: any) => (
-          <div key={k.key_preview} className="flex items-center justify-between rounded-lg border p-2.5">
+          <div key={k.safe_label || k.label || k.key_preview} className="flex items-center justify-between rounded-lg border p-2.5">
             <div className="flex items-center gap-2">
-              <code className="text-xs font-mono text-muted-foreground">{k.key_preview}</code>
-              <Badge className="text-[10px] bg-muted text-muted-foreground">{k.used} used</Badge>
-              {k.estimated_scrapes !== undefined && (
-                <Badge variant="outline" className="text-[10px] text-green-600 border-green-300">
-                  ~{k.estimated_scrapes} products
-                </Badge>
+              <code className="text-xs font-mono text-muted-foreground">{k.safe_label || k.label || k.key_preview}</code>
+              <Badge className={cn("text-[10px]", k.status === "BANNED" ? "bg-rose-500/10 text-rose-500" : k.status === "QUOTA_EXHAUSTED" ? "bg-amber-500/10 text-amber-500" : k.status === "ACTIVE" ? "bg-emerald-500/10 text-emerald-500" : "bg-muted text-muted-foreground")}>{k.status || "unknown"}</Badge>
+              {k.remaining !== undefined && k.remaining !== null && (
+                <Badge variant="outline" className="text-[10px] text-muted-foreground">{k.remaining} remaining</Badge>
               )}
+              <Badge className="text-[10px] bg-muted text-muted-foreground">{k.used} used</Badge>
             </div>
-            <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => removeKey(k.full_key || k.key_preview)}>
-              <Trash2 className="h-3.5 w-3.5 text-destructive" />
-            </Button>
+            <div className="flex items-center gap-1">
+              {k.status !== "BANNED" ? (
+                <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => banKey(k.safe_label || k.label)} title="Mark as banned">
+                  <Ban className="h-3.5 w-3.5 text-muted-foreground" />
+                </Button>
+              ) : (
+                <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => unbanKey(k.safe_label || k.label)} title="Unban key">
+                  <ShieldAlert className="h-3.5 w-3.5 text-emerald-500" />
+                </Button>
+              )}
+              <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => removeKey(k.safe_label || k.label)}>
+                <Trash2 className="h-3.5 w-3.5 text-destructive" />
+              </Button>
+            </div>
           </div>
         ))}
         {keys.length === 0 && (
@@ -467,7 +501,6 @@ function ScrapflyUsageSection() {
   const { data: usage, isLoading } = useQuery({
     queryKey: ["scrapfly-usage"],
     queryFn: () => api.getScrapflyUsage(),
-    refetchInterval: 30000,
   });
 
   if (isLoading) return <Skeleton className="h-20 w-full" />;

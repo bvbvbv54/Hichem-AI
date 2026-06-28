@@ -1,343 +1,305 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
-  Package, Image, Loader2, CheckCircle2, XCircle, Timer, TrendingUp, HardDrive, ShieldAlert, Zap,
+  Activity, Settings, ShieldAlert, RefreshCw,
+  DollarSign, Database, BarChart3,
 } from "lucide-react";
-import { SystemReadinessPanel } from "@/components/dashboard/system-readiness";
-import { ActiveJobsPanel } from "@/components/dashboard/active-jobs-panel";
-import { AdminControlsPanel } from "@/components/dashboard/admin-controls-panel";
-import { useSSE, useSSEEvent, subscribe } from "@/hooks/use-sse";
+import Link from "next/link";
 
-const REFETCH_INTERVAL = 3000;
+const statusColor: Record<string, string> = {
+  healthy: "text-emerald-500",
+  degraded: "text-amber-500",
+  offline: "text-rose-500",
+  working: "text-emerald-500",
+  unreachable: "text-rose-500",
+  ACTIVE: "text-emerald-500",
+  QUOTA_EXHAUSTED: "text-amber-500",
+  BANNED: "text-rose-500",
+};
 
-function EtaCounter({ seconds }: { seconds: number }) {
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  return <span className="font-mono text-xs">{m}m {s}s</span>;
-}
-
-export default function DashboardPage() {
-  useSSE();
-
-  const { data: stats, isLoading: statsLoading } = useQuery({
-    queryKey: ["dashboard-stats"],
-    queryFn: () => api.getDashboardStats(),
-    refetchInterval: REFETCH_INTERVAL,
-  });
-
-  const { data: queue } = useQuery({
-    queryKey: ["queue-info"],
-    queryFn: () => api.getQueueInfo(),
-    refetchInterval: REFETCH_INTERVAL,
-  });
-
-  const { data: systemStatus } = useQuery({
-    queryKey: ["system-status"],
-    queryFn: () => api.getSystemStatus(),
-    refetchInterval: 15000,
-  });
-
-  const { data: captchaData } = useQuery({
-    queryKey: ["captcha-intel"],
-    queryFn: () => api.getCaptchaIntelligence().catch(() => null),
-    refetchInterval: 30000,
-  });
-
-  const { data: scrapflyUsage } = useQuery({
-    queryKey: ["scrapfly-usage"],
-    queryFn: () => api.getScrapflyUsage().catch(() => null),
-    refetchInterval: 30000,
-  });
-
-  const { data: aiLimiter } = useQuery({
-    queryKey: ["ai-limiter"],
-    queryFn: () => api.getAiLimiter().catch(() => null),
-    refetchInterval: 15000,
-  });
-
-  const total = stats?.total_products ?? 0;
-  const scraped = stats?.products_scraped ?? stats?.scraped_count ?? 0;
-  const completed = stats?.products_completed ?? 0;
-  const failed = stats?.products_failed ?? 0;
-  const processing = stats?.products_processing ?? 0;
-  const inQueue = stats?.products_in_queue ?? 0;
-  const totalImages = stats?.total_images ?? 0;
-  const aiImages = stats?.ai_images ?? 0;
-  const doneRate = stats?.completion_percentage ?? (total > 0 ? Math.round(((completed + failed) / total) * 100) : 0);
-
-  const isLoading = statsLoading;
-
-  const allHealthy = systemStatus && Object.values(systemStatus).every((v) => v === "healthy");
-  const degradedCount = systemStatus ? Object.entries(systemStatus).filter(([k, v]) => k !== "api" && v !== "healthy").length : 0;
-
-  if (isLoading) return <Skeleton className="h-96 w-full rounded-xl" />;
-
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Dashboard</h1>
-          <p className="text-sm text-muted-foreground">Real-time overview</p>
-        </div>
-        <div className="flex items-center gap-2">
-          {allHealthy ? (
-            <Badge variant="outline" className="gap-1.5">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-              All Systems Go
-            </Badge>
-          ) : degradedCount > 0 ? (
-            <Badge variant="outline" className="gap-1.5 border-amber-500/30">
-              <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />
-              {degradedCount} degraded
-            </Badge>
-          ) : (
-            <Badge variant="outline" className="gap-1.5">
-              <span className="h-1.5 w-1.5 rounded-full bg-success animate-pulse" />
-              Live
-            </Badge>
-          )}
-        </div>
-      </div>
-
-      {/* Big progress ring */}
-      <Card>
-        <CardContent className="p-6">
-          <div className="flex items-center gap-8">
-            <div className="relative h-28 w-28 shrink-0">
-              <svg className="h-full w-full -rotate-90" viewBox="0 0 100 100">
-                <circle cx="50" cy="50" r="42" fill="none" stroke="hsl(var(--muted))" strokeWidth="8" />
-                <circle cx="50" cy="50" r="42" fill="none" stroke="hsl(var(--primary))" strokeWidth="8"
-                  strokeDasharray={`${doneRate * 2.64} 264`} strokeLinecap="round"
-                  className="transition-all duration-500" />
-              </svg>
-              <div className="absolute inset-0 flex items-center justify-center">
-                <span className="text-2xl font-bold">{doneRate}%</span>
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-x-8 gap-y-2 text-sm flex-1">
-              <div className="flex items-center gap-2">
-                <span className="h-2 w-2 rounded-full bg-indigo-500" />
-                <span className="text-muted-foreground">Scraped</span>
-                <span className="font-semibold ml-auto">{scraped}</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="h-2 w-2 rounded-full bg-primary" />
-                <span className="text-muted-foreground">Completed</span>
-                <span className="font-semibold ml-auto">{completed}</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="h-2 w-2 rounded-full bg-blue-500" />
-                <span className="text-muted-foreground">Processing</span>
-                <span className="font-semibold ml-auto">{processing}</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="h-2 w-2 rounded-full bg-yellow-500" />
-                <span className="text-muted-foreground">In Queue</span>
-                <span className="font-semibold ml-auto">{inQueue}</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="h-2 w-2 rounded-full bg-destructive" />
-                <span className="text-muted-foreground">Failed</span>
-                <span className="font-semibold ml-auto">{failed}</span>
-              </div>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Stat cards row */}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-        <StatCard icon={Package} label="Total Products" value={total} />
-        <StatCard icon={Image} label="Total Images" value={`${aiImages} AI + ${stats?.scraped_images ?? 0} scraped`} />
-        <StatCard icon={TrendingUp} label="AI Credits Used" value={stats?.ai_credits_used ?? 0} />
-        <StatCard icon={Timer} label="Avg Time" value={stats?.avg_processing_time_seconds && stats?.products_processing > 0 ? `${Math.round(stats.avg_processing_time_seconds / 60)}m` : "\u2014"} />
-        <StatCard icon={ShieldAlert} label="CAPTCHAs Solved" value={captchaData?.total_captchas_all_time ?? captchaData?.total_captchas_today ?? 0} />
-      </div>
-
-      {/* Queue + Batch + CAPTCHA + Admin */}
-      <div className="grid gap-4 lg:grid-cols-3">
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-medium flex items-center gap-2">
-              <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-pulse" />
-              Queue / Batch
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {queue ? (
-              <div className="space-y-3">
-                <div className="grid grid-cols-3 gap-2 text-center">
-                  <div>
-                    <div className="text-xl font-bold text-blue-500">{queue.active_jobs}</div>
-                    <div className="text-xs text-muted-foreground">Active</div>
-                  </div>
-                  <div>
-                    <div className="text-xl font-bold text-yellow-500">{queue.waiting_jobs}</div>
-                    <div className="text-xs text-muted-foreground">Waiting</div>
-                  </div>
-                  <div>
-                    <div className="text-xl font-bold text-destructive">{queue.failed_jobs}</div>
-                    <div className="text-xs text-muted-foreground">Failed</div>
-                  </div>
-                </div>
-                <Progress value={queue.active_jobs + queue.waiting_jobs > 0 ? ((queue.active_jobs) / (queue.active_jobs + queue.waiting_jobs + queue.failed_jobs)) * 100 : 0} className="h-1.5" />
-                <div className="flex justify-between text-xs text-muted-foreground">
-                  <span>{queue.workers_active} workers active</span>
-                  <span>Est. {queue.estimated_completion_minutes}m</span>
-                </div>
-              </div>
-            ) : (
-              <Skeleton className="h-20 w-full" />
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-medium flex items-center gap-2">
-              <ShieldAlert className="h-3.5 w-3.5 text-amber-500" />
-              CAPTCHA Intelligence
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {captchaData && captchaData.top_blocking_marketplaces ? (
-              <div className="space-y-2">
-                {captchaData.top_blocking_marketplaces.slice(0, 5).map((m: any) => (
-                  <div key={m.domain} className="flex items-center justify-between text-xs">
-                    <span className="font-medium truncate">{m.domain.replace(".com", "")}</span>
-                    <Badge className="text-[10px] bg-rose-500/10 text-rose-500 border-rose-500/20 shrink-0">
-                      {m.captcha_count}
-                    </Badge>
-                  </div>
-                ))}
-                {captchaData.top_blocking_marketplaces.length === 0 && (
-                  <p className="text-xs text-muted-foreground">No CAPTCHA events recorded yet</p>
-                )}
-                <div className="flex justify-between text-[10px] text-muted-foreground pt-1 border-t border-muted-foreground/10">
-                  <span>Total today: {captchaData.total_captchas_today}</span>
-                  <span>7d window</span>
-                </div>
-              </div>
-            ) : (
-              <p className="text-xs text-muted-foreground">No CAPTCHA data available</p>
-            )}
-          </CardContent>
-        </Card>
-
-        <AdminControlsPanel />
-      </div>
-
-      <div className="grid gap-4 lg:grid-cols-3">
-        <ActiveJobsPanel />
-
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-medium flex items-center gap-2">
-              <HardDrive className="h-3.5 w-3.5" />
-              AI Limiter
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {aiLimiter ? (
-              <>
-                <div className="flex items-baseline gap-1">
-                  <span className="text-2xl font-bold">${aiLimiter.usage_dollars}</span>
-                  <span className="text-xs text-muted-foreground">of ${aiLimiter.monthly_budget_dollars}</span>
-                </div>
-                <div className="w-full bg-muted rounded-full h-2 mt-2">
-                  <div className={`h-2 rounded-full transition-all ${
-                    aiLimiter.usage_percent > 80 ? "bg-rose-500" :
-                    aiLimiter.usage_percent > 50 ? "bg-amber-500" : "bg-emerald-500"
-                  }`} style={{width: `${Math.min(aiLimiter.usage_percent, 100)}%`}} />
-                </div>
-                <div className="flex justify-between text-xs text-muted-foreground mt-1">
-                  <span>${aiLimiter.remaining_dollars} left</span>
-                  <span>{aiLimiter.usage_percent}% used</span>
-                </div>
-              </>
-            ) : (
-              <p className="text-xs text-muted-foreground">Budget data unavailable</p>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-sm font-medium flex items-center gap-2">
-              <Zap className="h-3.5 w-3.5 text-amber-500" />
-              ScrapFly Remaining
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {scrapflyUsage ? (
-              <>
-                <div className="flex items-baseline gap-1">
-                  <span className="text-2xl font-bold">{scrapflyUsage.scrapes_remaining_actual ?? "?"}</span>
-                  <span className="text-xs text-muted-foreground">scrapes left</span>
-                </div>
-                <div className="flex items-baseline gap-1">
-                  <span className="text-lg font-semibold">{scrapflyUsage.remaining_credits ?? 0}</span>
-                  <span className="text-xs text-muted-foreground">credits remain</span>
-                </div>
-                <p className="text-xs text-muted-foreground mt-1">
-                  {scrapflyUsage.key_count ?? 0} key{(scrapflyUsage.key_count ?? 0) !== 1 ? "s" : ""} &middot; {scrapflyUsage.cost_per_scrape ?? 6} pts/scrape
-                </p>
-                <div className="flex justify-between text-[10px] text-muted-foreground mt-1">
-                  <span>{scrapflyUsage.total_credits ?? 0} total credits</span>
-                  <span>{scrapflyUsage.total_cost ?? 0} used</span>
-                </div>
-                <div className="w-full bg-muted rounded-full h-1.5 mt-1">
-                  <div className="h-1.5 rounded-full bg-primary transition-all" style={{width: `${Math.min((scrapflyUsage.total_cost / scrapflyUsage.total_credits) * 100, 100)}%`}} />
-                </div>
-                {!scrapflyUsage.has_usage_data && (
-                  <p className="text-xs text-muted-foreground mt-1">No requests yet - run a scrape to see usage</p>
-                )}
-                <div className="mt-2 space-y-1">
-                  {(scrapflyUsage.per_key_summary || []).map((k: any) => (
-                    <div key={k.key} className="flex items-center justify-between text-[10px] text-muted-foreground">
-                      <span className="font-mono truncate max-w-[140px]" title={k.key}>{k.key}</span>
-                      <span>{k.remaining}/{scrapflyUsage.total_credits / scrapflyUsage.key_count}</span>
-                    </div>
-                  ))}
-                </div>
-                {scrapflyUsage.scrapes_remaining_actual > 0 && scrapflyUsage.scrapes_remaining_actual < 50 && (
-                  <p className="text-xs text-amber-500 font-medium mt-1">Low credits remaining</p>
-                )}
-                {scrapflyUsage.has_usage_data && scrapflyUsage.scrapes_remaining_actual === 0 && (
-                  <p className="text-xs text-rose-500 font-medium mt-1">No credits left - add more keys</p>
-                )}
-              </>
-            ) : (
-              <p className="text-xs text-muted-foreground">Usage data unavailable</p>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      <SystemReadinessPanel />
-    </div>
-  );
-}
-
-function StatCard({ icon: Icon, label, value }: { icon: any; label: string; value: string | number }) {
+function StatCard({ icon, label, value, sub, color }: { icon: any; label: string; value: string | number; sub?: string; color?: string }) {
   return (
     <Card>
-      <CardContent className="p-4 flex items-center gap-3">
-        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
-          <Icon className="h-5 w-5 text-primary" />
+      <CardContent className="p-4 flex items-start gap-3">
+        <div className="rounded-lg bg-primary/10 p-2 shrink-0 mt-0.5">
+          {icon}
         </div>
-        <div className="min-w-0">
-          <div className="text-lg font-bold">{value}</div>
-          <div className="text-xs text-muted-foreground truncate">{label}</div>
+        <div className="min-w-0 flex-1">
+          <p className="text-xs text-muted-foreground">{label}</p>
+          <p className={cn("text-xl font-bold truncate", color)}>{value}</p>
+          {sub && <p className="text-[10px] text-muted-foreground">{sub}</p>}
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+function StatusBadge({ status }: { status: string }) {
+  const colors: Record<string, string> = {
+    healthy: "bg-emerald-500/10 text-emerald-500 border-emerald-500/20",
+    degraded: "bg-amber-500/10 text-amber-500 border-amber-500/20",
+    offline: "bg-rose-500/10 text-rose-500 border-rose-500/20",
+    ACTIVE: "bg-emerald-500/10 text-emerald-500 border-emerald-500/20",
+    QUOTA_EXHAUSTED: "bg-amber-500/10 text-amber-500 border-amber-500/20",
+    BANNED: "bg-rose-500/10 text-rose-500 border-rose-500/20",
+    UNREACHABLE: "bg-muted text-muted-foreground border-border/50",
+  };
+  return <Badge className={cn(colors[status] || "bg-muted text-muted-foreground", "text-[10px]")}>{status}</Badge>;
+}
+
+interface ScrapflyKey {
+  safe_label: string;
+  status: string;
+  used: number;
+  remaining: number | null;
+}
+
+export default function DashboardPage() {
+  const queryClient = useQueryClient();
+  const [refreshing, setRefreshing] = useState(false);
+
+  const { data: stats, isLoading: statsLoading } = useQuery({
+    queryKey: ["dash-stats"],
+    queryFn: () => api.getAdminStats(),
+  });
+
+  const { data: scrapflyKeys } = useQuery({
+    queryKey: ["scrapfly-keys-dash"],
+    queryFn: () => api.getScrapflyUsage(),
+  });
+
+  const { data: queueStatus } = useQuery({
+    queryKey: ["queue-status-dash"],
+    queryFn: () => api.getQueueStatus(),
+  });
+
+  const { data: systemStatus } = useQuery({
+    queryKey: ["system-status-dash"],
+    queryFn: () => api.getSystemStatus(),
+  });
+
+  const { data: aiLimiter } = useQuery({
+    queryKey: ["ai-limiter-dash"],
+    queryFn: () => api.getAiLimiter(),
+  });
+
+  const { data: acquisition } = useQuery({
+    queryKey: ["acq-stats-dash"],
+    queryFn: () => api.getAcquisitionStats(),
+  });
+
+  const refreshAll = async () => {
+    setRefreshing(true);
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["dash-stats"] }),
+      queryClient.invalidateQueries({ queryKey: ["scrapfly-keys-dash"] }),
+      queryClient.invalidateQueries({ queryKey: ["queue-status-dash"] }),
+      queryClient.invalidateQueries({ queryKey: ["system-status-dash"] }),
+      queryClient.invalidateQueries({ queryKey: ["ai-limiter-dash"] }),
+      queryClient.invalidateQueries({ queryKey: ["acq-stats-dash"] }),
+    ]);
+    setRefreshing(false);
+  };
+
+  if (statsLoading) {
+    return (
+      <div className="space-y-4">
+        <Skeleton className="h-8 w-48" />
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          {[1, 2, 3, 4].map((i) => <Skeleton key={i} className="h-24 rounded-xl" />)}
+        </div>
+      </div>
+    );
+  }
+
+  const keys: ScrapflyKey[] = scrapflyKeys?.keys || scrapflyKeys?.per_key_summary || [];
+  const workingKeys = keys.filter((k) => k.status === "ACTIVE" && (k.remaining || 0) > 0).length;
+  const exhaustedKeys = keys.filter((k) => k.status === "QUOTA_EXHAUSTED").length;
+  const bannedKeys = keys.filter((k) => k.status === "BANNED").length;
+  const unreachableKeys = keys.filter((k) => k.status === "UNREACHABLE").length;
+  const totalKeys = keys.length;
+
+  const qs = queueStatus || {};
+  const infra = systemStatus || stats?.infrastructure || {};
+  const svcList = ["api", "worker", "database", "storage"] as const;
+  const allHealthy = svcList.every((s) => infra[s] === "healthy");
+
+  const acqTotals = acquisition?.totals || {};
+  const aiLimit = aiLimiter || {};
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Dashboard</h1>
+          <p className="text-sm text-muted-foreground">System overview at a glance</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={refreshAll} disabled={refreshing}>
+            <RefreshCw className={cn("h-4 w-4 mr-1", refreshing && "animate-spin")} />
+            {refreshing ? "Refreshing..." : "Refresh"}
+          </Button>
+          <Link href="/settings">
+            <Button variant="outline" size="sm">
+              <Settings className="h-4 w-4 mr-1" /> Settings
+            </Button>
+          </Link>
+          <Link href="/admin">
+            <Button variant="outline" size="sm">
+              <BarChart3 className="h-4 w-4 mr-1" /> Admin
+            </Button>
+          </Link>
+        </div>
+      </div>
+
+      {/* Top Stats Row */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        <StatCard
+          icon={<ShieldAlert className="h-4 w-4 text-amber-500" />}
+          label="Scrapfly API Keys"
+          value={totalKeys > 0 ? `${workingKeys} working` : "No keys configured"}
+          color={bannedKeys > 0 ? "text-rose-500" : exhaustedKeys > 0 ? "text-amber-500" : "text-emerald-500"}
+          sub={totalKeys > 0 ? `${unreachableKeys} unreachable, ${exhaustedKeys} exhausted, ${bannedKeys} banned` : undefined}
+        />
+        <StatCard
+          icon={<DollarSign className="h-4 w-4 text-emerald-500" />}
+          label="AI Credits Used"
+          value={`$${aiLimit.usage_dollars?.toFixed(2) || "0.00"}`}
+          color="text-emerald-500"
+          sub={`of $${aiLimit.monthly_budget_dollars?.toFixed(2) || "0.00"} monthly budget`}
+        />
+        <StatCard
+          icon={<Activity className="h-4 w-4 text-blue-500" />}
+          label="Queue"
+          value={`${qs.pending || 0} pending / ${qs.processing || 0} active`}
+          color="text-blue-500"
+          sub={`${qs.failed || 0} failed${qs.dead_letter_count ? ` (${qs.dead_letter_count} dead letter)` : ""}`}
+        />
+        <StatCard
+          icon={<Database className="h-4 w-4 text-violet-500" />}
+          label="System"
+          value={allHealthy ? "All Healthy" : "Issues Detected"}
+          color={allHealthy ? "text-emerald-500" : "text-rose-500"}
+          sub={
+            svcList
+              .filter((s) => infra[s] !== "healthy")
+              .map((s) => `${s}: ${infra[s]}`)
+              .join(", ") || "All services operational"
+          }
+        />
+      </div>
+
+      {/* Scrapfly Keys Detail + Quick Actions */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <Card>
+          <CardHeader className="pb-2 flex flex-row items-center justify-between">
+            <CardTitle className="text-sm font-medium flex items-center gap-2">
+              <ShieldAlert className="h-4 w-4" />
+              Scrapfly API Keys
+            </CardTitle>
+            <Link href="/settings">
+              <Button variant="ghost" size="sm" className="h-7 text-xs gap-1">
+                <Settings className="h-3 w-3" /> Manage
+              </Button>
+            </Link>
+          </CardHeader>
+          <CardContent>
+            {totalKeys === 0 ? (
+              <div className="flex flex-col items-center gap-2 py-4 text-center">
+                <ShieldAlert className="h-8 w-8 text-muted-foreground" />
+                <p className="text-sm text-muted-foreground">No Scrapfly API keys configured</p>
+                <Link href="/settings">
+                  <Button size="sm" variant="outline" className="mt-1">
+                    <Settings className="h-4 w-4 mr-1" /> Add keys in Settings
+                  </Button>
+                </Link>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {keys.slice(0, 10).map((k: ScrapflyKey, i: number) => (
+                  <div key={i} className="flex items-center justify-between text-xs border-b border-border/30 pb-1.5 last:border-0">
+                    <span className="font-mono text-muted-foreground truncate max-w-[120px]">{k.safe_label}</span>
+                    <div className="flex items-center gap-2">
+                      <StatusBadge status={k.status} />
+                      {k.remaining !== null && k.remaining !== undefined && (
+                        <span className="text-muted-foreground">{k.remaining} remaining</span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium flex items-center gap-2">
+              <Activity className="h-4 w-4" />
+              Pipeline Activity
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <div className="rounded-lg border p-2">
+                <p className="text-lg font-bold text-yellow-500">{acqTotals.pending || 0}</p>
+                <p className="text-[10px] text-muted-foreground">Pending</p>
+              </div>
+              <div className="rounded-lg border p-2">
+                <p className="text-lg font-bold text-blue-500">{acqTotals.scraping || 0}</p>
+                <p className="text-[10px] text-muted-foreground">Scraping</p>
+              </div>
+              <div className="rounded-lg border p-2">
+                <p className="text-lg font-bold text-emerald-500">{acqTotals.completed || 0}</p>
+                <p className="text-[10px] text-muted-foreground">Completed</p>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2 text-center">
+              <div className="rounded-lg border p-2">
+                <p className="text-lg font-bold text-indigo-500">{acqTotals.scraped || 0}</p>
+                <p className="text-[10px] text-muted-foreground">Scraped</p>
+              </div>
+              <div className="rounded-lg border p-2">
+                <p className="text-lg font-bold text-rose-500">{acqTotals.failed || 0}</p>
+                <p className="text-[10px] text-muted-foreground">Failed</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* System Status Row */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium flex items-center gap-2">
+            <Database className="h-4 w-4" />
+            Infrastructure
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex flex-wrap gap-2">
+            {svcList.map((s) => (
+              <div key={s} className="flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs">
+                <span className={cn(
+                  "h-2 w-2 rounded-full",
+                  infra[s] === "healthy" ? "bg-emerald-500" : "bg-rose-500"
+                )} />
+                <span className="font-medium capitalize">{s}</span>
+                <StatusBadge status={infra[s] || "unknown"} />
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
   );
 }
