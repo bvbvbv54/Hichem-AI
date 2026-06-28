@@ -72,12 +72,11 @@ async def get_asset_file(
         return await _serve_file(asset.file_path)
 
     # Try scraped image from product detail (hashed path)
-    # asset_id is a hash - look through recent job metas for matching path
+    # asset_id is a hash - search all job metas for matching path
     jobs_result = await session.execute(
-        select(Job).order_by(desc(Job.created_at)).limit(100)
+        select(Job).order_by(desc(Job.created_at)).limit(2000)
     )
-    jobs = jobs_result.scalars().all()
-    for job in jobs:
+    for job in jobs_result.scalars().all():
         job_meta = job.meta or {}
         saved = job_meta.get("saved_assets", [])
         for img_path in saved:

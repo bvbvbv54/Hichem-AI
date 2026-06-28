@@ -36,6 +36,20 @@ _FALLBACK_KEYS = [
 # Keys permanently deprecated (wrong account, revoked, etc.) — never revived.
 _PERMANENTLY_DEAD: set[str] = set()
 
+
+def _infer_reset_date(key: str) -> str:
+    """Infer a plausible reset date for keys without a hardcoded one: 30 days from now."""
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc) + timedelta(days=30)).strftime("%Y-%m-%d")
+
+
+def clear_reset_dates_cache() -> None:
+    """Clear the module-level reset dates cache so it refreshes on next load."""
+    global _KEY_RESET_DATES
+    # No-op: _KEY_RESET_DATES is the source of truth.
+    # External caches (e.g. scrapfly_client._RESET_DATES_CACHE) should be cleared separately.
+    pass
+
 DEAD_KEYS: set[str] = {
     "SCRAPFLY_KEY_REDACTED",
     "SCRAPFLY_KEY_REDACTED",

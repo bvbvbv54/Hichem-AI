@@ -433,6 +433,11 @@ function ScrapflyKeysSection() {
             <div className="flex items-center gap-2">
               <code className="text-xs font-mono text-muted-foreground">{k.key_preview}</code>
               <Badge className="text-[10px] bg-muted text-muted-foreground">{k.used} used</Badge>
+              {k.estimated_scrapes !== undefined && (
+                <Badge variant="outline" className="text-[10px] text-green-600 border-green-300">
+                  ~{k.estimated_scrapes} products
+                </Badge>
+              )}
             </div>
             <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => removeKey(k.full_key || k.key_preview)}>
               <Trash2 className="h-3.5 w-3.5 text-destructive" />

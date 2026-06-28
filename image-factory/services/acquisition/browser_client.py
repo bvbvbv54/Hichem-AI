@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import random
+from pathlib import Path
 from typing import Any
 
 from configs.settings import settings
@@ -33,6 +35,8 @@ _CN_USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
 ]
 _CN_DOMAINS = {"1688.com", "taobao.com", "tmall.com", "detail.1688.com"}
+
+SESSION_DIR = Path(settings.storage_path) / "browser_sessions"
 
 
 def _domain_config(url: str) -> dict:
@@ -78,6 +82,40 @@ class BrowserClient:
         self._context_counter = 0
         self._lock = asyncio.Lock()
 
+    # ── Session persistence helpers ─────────────────────────────────
+    def _session_path(self, url: str) -> Path:
+        from urllib.parse import urlparse
+        host = urlparse(url).hostname or "unknown"
+        SESSION_DIR.mkdir(parents=True, exist_ok=True)
+        return SESSION_DIR / f"{host.replace('.', '_')}_storage.json"
+
+    async def _load_session(self, context: Any, url: str) -> None:
+        try:
+            path = self._session_path(url)
+            if path.exists():
+                storage = json.loads(path.read_text())
+                await context.add_cookies(storage.get("cookies", []))
+                logger.info("session_loaded", url=url, path=str(path))
+        except Exception as e:
+            logger.warning("session_load_failed", error=str(e))
+
+    async def _save_session(self, context: Any, url: str) -> None:
+        try:
+            storage = await context.storage_state()
+            path = self._session_path(url)
+            path.write_text(json.dumps(storage, indent=2))
+            logger.info("session_saved", url=url, path=str(path))
+        except Exception as e:
+            logger.warning("session_save_failed", error=str(e))
+
+    # ── Proxy support ───────────────────────────────────────────────
+    async def _get_proxy(self) -> str | None:
+        try:
+            from services.acquisition.proxy_manager import get_proxy_manager
+            return await get_proxy_manager().get_proxy()
+        except Exception:
+            return None
+
     async def _ensure_browser(self) -> Any:
         if self._browser is None:
             try:
@@ -88,7 +126,8 @@ class BrowserClient:
             try:
                 self._playwright_cm = async_playwright()
                 self._playwright = await self._playwright_cm.__aenter__()
-                self._browser = await self._playwright.chromium.launch(
+                proxy_url = await self._get_proxy() if settings.proxy_enabled else None
+                launch_opts = dict(
                     headless=settings.playwright_headless,
                     args=[
                         "--no-sandbox",
@@ -102,7 +141,10 @@ class BrowserClient:
                         "--disable-blink-features=AutomationControlled",
                     ],
                 )
-                logger.info("browser_launched")
+                if proxy_url:
+                    launch_opts["proxy"] = {"server": proxy_url}
+                self._browser = await self._playwright.chromium.launch(**launch_opts)
+                logger.info("browser_launched", proxy=bool(proxy_url))
             except Exception as exc:
                 logger.error("browser_launch_failed", error=str(exc))
                 return None
@@ -133,6 +175,8 @@ class BrowserClient:
                 "Sec-Ch-Ua-Platform": '"Windows"',
             },
         )
+        # Restore previous session state (cookies, localStorage, etc.)
+        await self._load_session(context, url)
         lang_script = cfg["languages_script"]
         await context.add_init_script(f"""
             Object.defineProperty(navigator, 'webdriver', {{ get: () => undefined }});
@@ -147,22 +191,6 @@ class BrowserClient:
             );
         """)
         return context
-
-    async def _wait_for_images(self, page: Any) -> None:
-        try:
-            await page.wait_for_function(
-                "() => document.querySelectorAll('img').length > 10",
-                timeout=10000,
-            )
-        except Exception:
-            pass
-        try:
-            await page.wait_for_function(
-                "() => Array.from(document.querySelectorAll('img')).some(i => i.naturalWidth > 200)",
-                timeout=10000,
-            )
-        except Exception:
-            pass
 
     API_IMAGE_ENDPOINTS = {
         "api/oak/integration/render": ["goods.hd_thumb_url", "goods.galleryImgs", "hd_thumb_url"],
@@ -203,7 +231,7 @@ class BrowserClient:
         result = await self.fetch_page_with_api(url, timeout)
         return result[0] if result else None
 
-    async def fetch_page_with_api(self, url: str, timeout: int = 90000) -> tuple[str | None, list[str]]:
+    async def fetch_page_with_api(self, url: str, timeout: int = 120000) -> tuple[str | None, list[str]]:
         async with self._lock:
             for attempt in range(2):
                 try:

@@ -6,6 +6,7 @@ import json
 import math
 import re
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -184,6 +185,14 @@ async def _execute_product_pipeline(self: Any, job_id: str, url: str, project_na
         parent_batch_id = await _get_parent_batch_id(job_id)
 
         try:
+            from services.acquisition.pipeline import BANNED_DOMAINS
+            domain = urlparse(url).netloc.replace("www.", "")
+            if any(d in domain for d in BANNED_DOMAINS):
+                logger.warning("domain_banned_at_task", job_id=job_id, url=url, domain=domain)
+                failure_type = "domain_banned"
+                failure_detail = f"{domain} is not supported — permanently banned (login wall / CAPTCHA / no anonymous access)"
+                raise RuntimeError(failure_detail)
+
             await _update_product_link_status(url, "scraping", job_id=job_id)
 
             # Intelligence: prepare session and request context
@@ -237,7 +246,7 @@ async def _execute_product_pipeline(self: Any, job_id: str, url: str, project_na
             product_name = acq_result.page_title or Path(urlparse(url).path).stem.replace("-", " ").replace("_", " ").title() or url
             product_description = acq_result.page_description
 
-            await _update_product_link_status(url, "scraped", product_name=product_name, scraped_image_count=scraped_count)
+            await _update_product_link_status(url, "scraped", product_name=product_name)
 
             await estimator.record_stage(job_id, "acquisition", time.monotonic() - stage_start)
 
@@ -247,35 +256,59 @@ async def _execute_product_pipeline(self: Any, job_id: str, url: str, project_na
 
             saved_paths: list[str] = []
             import shutil
+            seen_dst: set[str] = set()
             for img_path in acq_result.image_paths:
-                dst = scraped_dir / Path(img_path).name
-                shutil.copy2(img_path, str(dst))
-                saved_paths.append(str(dst))
-
-            # Content-based dedup: delete duplicate files with same (width, height, file_size)
-            seen_content: dict[tuple, str] = {}
-            dedup_removed = 0
-            final_paths: list[str] = []
-            for sp in saved_paths:
-                sp_path = Path(sp)
-                if not sp_path.exists():
+                if not Path(img_path).exists():
+                    logger.warning("source_image_missing", path=img_path)
                     continue
-                fsize = sp_path.stat().st_size
-                try:
-                    with PILImage.open(sp) as img:
-                        content_key = (img.width, img.height, fsize)
-                except Exception:
-                    content_key = (0, 0, fsize)
-                if content_key in seen_content:
-                    sp_path.unlink(missing_ok=True)
-                    dedup_removed += 1
-                    logger.info("dedup_deleted_duplicate", path=sp, key=content_key)
-                else:
-                    seen_content[content_key] = sp
-                    final_paths.append(sp)
-            saved_paths = final_paths
-            if dedup_removed:
-                logger.info("dedup_summary", dedup_removed=dedup_removed, kept=len(saved_paths))
+                dst = str(scraped_dir / Path(img_path).name)
+                if dst not in seen_dst:
+                    seen_dst.add(dst)
+                    shutil.copy2(img_path, dst)
+                    saved_paths.append(dst)
+
+            deduped_count = len(saved_paths)
+            await _update_product_link_status(url, "scraped", scraped_image_count=deduped_count)
+
+            # Fix: create Asset records for each kept image so detail page can find them
+            if saved_paths:
+                async with async_session() as asset_session:
+                    from database.repository import AssetRepository
+                    asset_repo = AssetRepository(asset_session)
+                    for sp in saved_paths:
+                        sp_path = Path(sp)
+                        if not sp_path.exists():
+                            continue
+                        try:
+                            from PIL import Image as PILImg
+                            with PILImg.open(sp_path) as img:
+                                width, height = img.size
+                        except Exception:
+                            width = height = 0
+                        try:
+                            file_size = sp_path.stat().st_size
+                        except Exception:
+                            file_size = 0
+                        ext = sp_path.suffix.lower().lstrip(".")
+                        mime = f"image/{ext}" if ext else "image/png"
+                        await asset_repo.create({
+                            "id": str(uuid.uuid4()),
+                            "job_id": job_id,
+                            "filename": sp_path.name,
+                            "file_path": str(sp_path),
+                            "file_size": file_size,
+                            "mime_type": mime.replace("jpg", "jpeg"),
+                            "width": width,
+                            "height": height,
+                            "alt_text": product_name or "",
+                            "meta": {"type": "scraped"},
+                        })
+
+            if deduped_count == 0:
+                failure_type = "acquisition"
+                failure_detail = "All images removed by dedup"
+                await _update_product_link_status(url, "failed", error_message=failure_detail, failure_type=failure_type)
+                raise RuntimeError(failure_detail)
 
             if product_description:
                 desc_path = output_dir / "description.json"
@@ -406,7 +439,9 @@ async def _execute_product_pipeline(self: Any, job_id: str, url: str, project_na
                 retries_left = 0
 
             non_retryable = False
-            if failure_detail:
+            if failure_type == "domain_banned":
+                non_retryable = True
+            if failure_detail and not non_retryable:
                 fd = failure_detail.lower()
                 if any(kw in fd for kw in ["captcha", "no image urls", "no images acquired"]):
                     non_retryable = True

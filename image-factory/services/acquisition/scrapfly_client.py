@@ -10,28 +10,26 @@ import httpx
 
 from configs.logging import get_logger
 from configs.settings import settings
+from services.scrapfly_rotation import LEASE_RENEWAL_INTERVAL
 
 logger = get_logger(__name__)
 
 SCRAPFLY_BASE = "https://api.scrapfly.io/scrape"
 SCRAPFLY_SEM_KEY = "scrapfly:semaphore"
-SCRAPFLY_KEY_COOLDOWN_PREFIX = "scrapfly:cooldown:"
-SCRAPFLY_KEY_DEAD_PREFIX = "scrapfly:dead:"
-SCRAPFLY_KEY_FAIL_PREFIX = "scrapfly:fails:"
 SCRAPFLY_QUOTA_EXHAUSTED_KEY = "scrapfly:quota_exhausted"
-SCRAPFLY_QUOTA_EXHAUSTED_KEY_PREFIX = "scrapfly:quota_key_exhausted:"
-MAX_CONSECUTIVE_FAILURES = 3
-QUOTA_WAIT_INTERVAL = 300        # 5 min between quota polls
-QUOTA_WAIT_MAX = 86400           # 24h max wait
+QUOTA_WAIT_MAX = 86400
+
+_RESET_DATES_CACHE: dict[str, str] = {}
 
 
 class ScrapflyClient:
     def __init__(self) -> None:
         self._client: httpx.AsyncClient | None = None
         self._redis = None
-        self._session = None
-        self._dead_keys: set[str] = set()
-        self._quota_exhausted_flag: bool = False
+        self._rotation: Any = None
+        self._recovery: Any = None
+        self._states_loaded = False
+        self._last_recovery_run: float = 0
 
     async def _get_redis(self):
         if self._redis is None:
@@ -39,25 +37,27 @@ class ScrapflyClient:
             self._redis = await aioredis.from_url(settings.redis_url, socket_connect_timeout=5)
         return self._redis
 
-    async def _load_dead_keys(self, redis_conn) -> set[str]:
+    async def _ensure_rotation(self, redis_conn):
+        if self._rotation is None:
+            from services.scrapfly_rotation import KeyStateManager, RecoveryScheduler
+            self._rotation = KeyStateManager(redis_conn)
+            self._recovery = RecoveryScheduler(redis_conn, self._rotation)
+        return self._rotation, self._recovery
+
+    async def _load_reset_dates(self, keys: list[str] | None = None) -> dict[str, str]:
+        global _RESET_DATES_CACHE
         try:
-            from services.scrapfly_key_manager import DEAD_KEYS
-            self._dead_keys.update(DEAD_KEYS)
-        except Exception:
-            pass
-        try:
-            cursor = 0
-            while True:
-                cursor, keys = await redis_conn.scan(cursor, match=f"{SCRAPFLY_KEY_DEAD_PREFIX}*")
+            from services.scrapfly_key_manager import _KEY_RESET_DATES, _infer_reset_date
+            merged = dict(_KEY_RESET_DATES)
+            if keys:
                 for k in keys:
-                    key_name = k.decode() if isinstance(k, bytes) else k
-                    short = key_name.replace(SCRAPFLY_KEY_DEAD_PREFIX, "")
-                    self._dead_keys.add(short)
-                if cursor == 0:
-                    break
+                    if k not in merged:
+                        merged[k] = _infer_reset_date(k)
+            _RESET_DATES_CACHE.clear()
+            _RESET_DATES_CACHE.update(merged)
         except Exception:
             pass
-        return self._dead_keys
+        return _RESET_DATES_CACHE
 
     async def _acquire_global_sem(self, redis_conn) -> bool:
         key = SCRAPFLY_SEM_KEY
@@ -80,35 +80,6 @@ class ScrapflyClient:
             await redis_conn.zremrangebyscore(SCRAPFLY_SEM_KEY, "-inf", now - 30)
         except Exception:
             pass
-
-    async def _is_key_on_cooldown(self, redis_conn, key_short: str) -> bool:
-        try:
-            remaining = await redis_conn.ttl(f"{SCRAPFLY_KEY_COOLDOWN_PREFIX}{key_short}")
-            return remaining > 0
-        except Exception:
-            return False
-
-    async def _mark_key_cooldown(self, redis_conn, key_short: str, duration: int = 120) -> None:
-        try:
-            await redis_conn.setex(f"{SCRAPFLY_KEY_COOLDOWN_PREFIX}{key_short}", duration, "1")
-        except Exception:
-            pass
-
-    async def _mark_key_dead(self, redis_conn, key_short: str) -> None:
-        self._dead_keys.add(key_short)
-        try:
-            await redis_conn.setex(f"{SCRAPFLY_KEY_DEAD_PREFIX}{key_short}", 86400, "1")
-            logger.warning("scrapfly_key_marked_dead", key=key_short)
-        except Exception:
-            pass
-
-    async def _increment_failure(self, redis_conn, key_short: str) -> int:
-        try:
-            count = await redis_conn.incr(f"{SCRAPFLY_KEY_FAIL_PREFIX}{key_short}")
-            await redis_conn.expire(f"{SCRAPFLY_KEY_FAIL_PREFIX}{key_short}", 3600)
-            return count
-        except Exception:
-            return 0
 
     async def _get_keys(self) -> list[str]:
         try:
@@ -147,90 +118,73 @@ class ScrapflyClient:
             self._client = httpx.AsyncClient(timeout=60.0, follow_redirects=True)
         return self._client
 
-    async def _get_available_keys(self, redis_conn, keys: list[str]) -> list[str]:
-        available = []
-        for key in keys:
-            key_short = key[:20]
-            if key_short in self._dead_keys:
-                continue
-            if await self._is_key_on_cooldown(redis_conn, key_short):
-                continue
-            available.append(key)
-        try:
-            key_remaining = []
-            for key in available:
-                short = key[:20]
-                rem = await redis_conn.hget("scrapfly:usage", f"{short}:remaining")
-                remaining = int(rem) if rem else 100000
-                key_remaining.append((remaining, key))
-            key_remaining.sort(reverse=True)
-            return [k for _, k in key_remaining]
-        except Exception:
-            return available
-
     async def _is_quota_exhausted(self, redis_conn) -> bool:
-        """Check if Scrapfly quota is globally exhausted (all keys out of credits)."""
         try:
             val = await redis_conn.get(SCRAPFLY_QUOTA_EXHAUSTED_KEY)
             return val is not None
         except Exception:
-            return self._quota_exhausted_flag
+            return False
 
     async def _mark_quota_exhausted(self, redis_conn) -> None:
-        """Mark quota exhausted globally with a long TTL (24h)."""
-        self._quota_exhausted_flag = True
         try:
             await redis_conn.setex(SCRAPFLY_QUOTA_EXHAUSTED_KEY, 86400, str(time.time()))
         except Exception:
             pass
 
     async def _clear_quota_exhausted(self, redis_conn) -> None:
-        """Clear global quota exhausted flag on successful request."""
-        self._quota_exhausted_flag = False
         try:
             await redis_conn.delete(SCRAPFLY_QUOTA_EXHAUSTED_KEY)
         except Exception:
             pass
 
+    async def _run_recovery(self, redis_conn, reset_dates: dict[str, str] | None = None) -> None:
+        now = time.time()
+        if now - self._last_recovery_run < 600:
+            return
+        self._last_recovery_run = now
+        try:
+            rotation, recovery = await self._ensure_rotation(redis_conn)
+            keys = await self._get_keys()
+            if keys and reset_dates is None:
+                reset_dates = await self._load_reset_dates(keys)
+            if keys and not self._states_loaded:
+                await rotation.load_all_states(keys, reset_dates)
+                self._states_loaded = True
+            revived = await recovery.run_recovery_cycle(keys, reset_dates)
+            if revived:
+                logger.info("recovery_revived_keys", count=len(revived), keys=revived)
+        except Exception as e:
+            logger.warning("recovery_run_failed", error=str(e))
+
     async def _wait_for_quota(self, url: str, render_js: bool, country: str | None, redis_conn) -> str | None:
-        """Wait loop: poll periodically for new keys or quota reset. Returns content or None."""
+        """Wait loop with recovery checks. Returns content or None."""
         start = time.time()
         poll = settings.scrapfly_quota_poll_interval
-        logger.warning("scrapfly_quota_exhausted_waiting",
-                       url=url, poll_interval=poll, max_wait=QUOTA_WAIT_MAX)
+        logger.warning("scrapfly_quota_exhausted_waiting", url=url, poll_interval=poll, max_wait=QUOTA_WAIT_MAX)
 
-        from services.scrapfly_key_manager import _is_key_past_reset, DEAD_KEYS, retry_unauthorized_keys
+        rotation, recovery = await self._ensure_rotation(redis_conn)
 
         while time.time() - start < QUOTA_WAIT_MAX:
             await asyncio.sleep(poll)
 
-            # 0. Check if any previously unauthorized keys are now past their retry date
-            revived_unauth = await retry_unauthorized_keys(redis_conn)
-            if revived_unauth:
-                logger.info("scrapfly_unauthorized_keys_revived", revived=len(revived_unauth))
-
-            # 1. Re-fetch keys from DB (new key may have been added via admin)
             keys = await self._get_keys()
+            reset_dates = await self._load_reset_dates(keys)
+            await self._run_recovery(redis_conn, reset_dates)
             if keys:
-                available = await self._get_available_keys(redis_conn, keys)
-                if available:
-                    logger.info("scrapfly_quota_new_key_found", available=len(available))
-                    await self._clear_quota_exhausted(redis_conn)
-                    # Retry with the newly available key
-                    return await self._fetch_with_keys(available, url, render_js, country, redis_conn)
+                if not self._states_loaded:
+                    await rotation.load_all_states(keys, reset_dates)
+                    self._states_loaded = True
 
-            # 2. Check if any dead keys have passed their reset date
-            revived = [k for k in list(DEAD_KEYS) if _is_key_past_reset(k)]
-            if revived:
-                for k in revived:
-                    DEAD_KEYS.discard(k)
-                    logger.info("scrapfly_key_auto_revived", key=k[:20])
-                keys = await self._get_keys()
-                available = await self._get_available_keys(redis_conn, keys)
-                if available:
-                    logger.info("scrapfly_quota_reset_revived_keys", revived=len(revived))
-                    await self._clear_quota_exhausted(redis_conn)
-                    return await self._fetch_with_keys(available, url, render_js, country, redis_conn)
+                best = await rotation.select_best_key(keys)
+                if best:
+                    reserved = await rotation.reserve_key(best)
+                    if reserved:
+                        logger.info("scrapfly_quota_recovered_best_key", key=best[:20])
+                        result = await self._fetch_with_keys([best], url, render_js, country, redis_conn, rotation)
+                        await rotation.release_key(best)
+                        if result:
+                            await self._clear_quota_exhausted(redis_conn)
+                            return result
 
             logger.debug("scrapfly_still_waiting_for_quota", elapsed=round(time.time() - start, 1))
 
@@ -238,13 +192,18 @@ class ScrapflyClient:
         return None
 
     async def _fetch_with_keys(self, keys: list[str], url: str, render_js: bool,
-                                country: str | None, redis_conn) -> str | None:
-        """Core fetch logic — iterate through keys, return first success or None."""
-        quota_exhausted_keys: set[str] = set()
+                                country: str | None, redis_conn,
+                                rotation: Any = None) -> str | None:
+        """Core fetch logic using rotation manager for weighted key selection."""
         total_429 = 0
+        attempted_keys: set[str] = set()
 
         for key in keys:
             key_short = key[:20]
+            if key_short in attempted_keys:
+                continue
+            attempted_keys.add(key_short)
+
             try:
                 client = await self._get_client()
                 params: dict[str, Any] = {
@@ -267,55 +226,46 @@ class ScrapflyClient:
 
                 data = resp.json()
 
+                if rotation:
+                    if resp.status_code == 200:
+                        await rotation.record_success(key, cost, remaining, remaining_project)
+                    else:
+                        error_msg = data.get("error", data.get("message", str(resp.status_code)))
+                        await rotation.record_failure(key, resp.status_code, error_msg)
+
                 if resp.status_code == 401:
                     logger.warning("scrapfly_unauthorized", key=key_short)
-                    from services.scrapfly_key_manager import mark_key_unauthorized
-                    await mark_key_unauthorized(key, redis_conn)
                     continue
 
                 if resp.status_code == 429:
                     total_429 += 1
-                    if remaining_project <= 0:
-                        # Quota exhaustion (not just rate limiting)
-                        logger.warning("scrapfly_quota_exhausted", key=key_short)
-                        quota_exhausted_keys.add(key_short)
-                        await self._mark_key_cooldown(redis_conn, key_short, 3600)  # 1h cooldown
-                    else:
-                        # Rate limiting — short cooldown
-                        logger.warning("scrapfly_rate_limited", key=key_short)
-                        await self._mark_key_cooldown(redis_conn, key_short, settings.scrapfly_key_cooldown)
                     await asyncio.sleep(random.uniform(2, 5))
                     continue
 
                 if resp.status_code != 200:
                     error = data.get("error", data.get("message", str(resp.status_code)))
                     logger.warning("scrapfly_error", key=key_short, error=error)
-                    fail_count = await self._increment_failure(redis_conn, key_short)
-                    if fail_count >= MAX_CONSECUTIVE_FAILURES:
-                        await self._mark_key_dead(redis_conn, key_short)
                     continue
 
                 result = data.get("result", {})
                 content = result.get("content")
                 if content:
-                    try:
-                        await redis_conn.delete(f"{SCRAPFLY_KEY_FAIL_PREFIX}{key_short}")
-                    except Exception:
-                        pass
-                    logger.info("scrapfly_success", url=url, js=render_js, cost=cost)
+                    logger.info("scrapfly_success", url=url, js=render_js, cost=cost, key=key_short)
                     return content
 
                 logger.warning("scrapfly_no_content", url=url)
             except Exception as e:
                 logger.warning("scrapfly_exception", key=key_short, error=str(e))
-                fail_count = await self._increment_failure(redis_conn, key_short)
-                if fail_count >= MAX_CONSECUTIVE_FAILURES:
-                    await self._mark_key_dead(redis_conn, key_short)
+                if rotation:
+                    await rotation.record_failure(key, 0, str(e))
                 await asyncio.sleep(random.uniform(1, 3))
                 continue
 
-        # After all keys tried — signal quota exhaustion if all failures were 429 with 0 credit
-        if quota_exhausted_keys and len(quota_exhausted_keys) == total_429 and total_429 > 0:
+        if rotation:
+            states = rotation._local_states
+            await rotation.update_metrics(list(states.values()))
+
+        if total_429 > 0 and total_429 == len(attempted_keys):
             from services.scrapfly_key_manager import notify_quota_exhausted
             await self._mark_quota_exhausted(redis_conn)
             await notify_quota_exhausted(redis_conn)
@@ -336,48 +286,88 @@ class ScrapflyClient:
             logger.warning("scrapfly_budget_exhausted")
             return None
 
-        await self._load_dead_keys(redis_conn)
+        rotation, recovery = await self._ensure_rotation(redis_conn)
 
-        # Check if we're in quota-exhausted state — enter wait loop immediately
+        keys = await self._get_keys()
+        reset_dates = await self._load_reset_dates(keys)
+
+        await self._run_recovery(redis_conn, reset_dates)
+
+        if not self._states_loaded:
+            if keys:
+                await rotation.load_all_states(keys, reset_dates)
+                self._states_loaded = True
+
         if await self._is_quota_exhausted(redis_conn):
             logger.info("scrapfly_quota_already_exhausted_entering_wait")
             return await self._wait_for_quota(url, render_js, country, redis_conn)
 
         await self._acquire_global_sem(redis_conn)
         try:
-            keys = await self._get_keys()
             if not keys:
                 logger.warning("scrapfly_no_keys_configured")
                 return None
 
-            all_keys = keys
-            keys = await self._get_available_keys(redis_conn, keys)
-            if not keys:
-                logger.warning("scrapfly_all_keys_on_cooldown_or_dead")
-                cooldown_ttls = []
-                for key in all_keys:
-                    key_short = key[:20]
-                    if key_short in self._dead_keys:
-                        continue
-                    ttl = await redis_conn.ttl(f"{SCRAPFLY_KEY_COOLDOWN_PREFIX}{key_short}")
-                    if ttl > 0:
-                        cooldown_ttls.append(ttl)
-                if cooldown_ttls:
-                    wait = min(max(cooldown_ttls) + random.uniform(1, 5), 60)
+            best = await rotation.select_best_key(keys)
+            if not best:
+                logger.warning("scrapfly_no_available_keys")
+                states = list(rotation._local_states.values())
+                cooldown_states = [s for s in states if s.status == "COOLDOWN" and s.cooldown_until]
+                if cooldown_states:
+                    max_wait = max((s.cooldown_until - time.time()) for s in cooldown_states)
+                    wait = min(max_wait + random.uniform(1, 5), 60)
                     logger.info("scrapfly_waiting_for_cooldown", wait_seconds=round(wait, 1))
                     await asyncio.sleep(wait)
-                    keys = await self._get_keys()
-                    keys = await self._get_available_keys(redis_conn, keys)
-                    if not keys:
-                        return None
+                    best = await rotation.select_best_key(keys)
+                    if not best:
+                        rev_cycle = await recovery.run_recovery_cycle(keys, reset_dates)
+                        if rev_cycle:
+                            best = await rotation.select_best_key(keys)
+                if not best:
+                    return None
 
-            result = await self._fetch_with_keys(keys, url, render_js, country, redis_conn)
+            reserved = await rotation.reserve_key(best)
+            if not reserved:
+                logger.debug("scrapfly_key_already_reserved", key=best[:20])
+                other = await rotation.select_best_key([k for k in keys if k[:20] != best[:20]])
+                if other:
+                    best = other
+                    reserved = await rotation.reserve_key(best)
+                if not reserved:
+                    await asyncio.sleep(random.uniform(0.5, 2))
+                    return await self.fetch_page(url, render_js, country)
 
-            # If quota exhaustion detected and no result, enter wait loop
-            if result is None and await self._is_quota_exhausted(redis_conn):
-                return await self._wait_for_quota(url, render_js, country, redis_conn)
+            lease_renewal_task: asyncio.Task | None = None
 
-            return result
+            async def _renew_lease_loop():
+                while True:
+                    await asyncio.sleep(LEASE_RENEWAL_INTERVAL)
+                    ok = await rotation.renew_lease(best)
+                    if not ok:
+                        break
+
+            try:
+                lease_renewal_task = asyncio.create_task(_renew_lease_loop())
+                result = await self._fetch_with_keys([best], url, render_js, country, redis_conn, rotation)
+                if result is None:
+                    other_key = await rotation.select_best_key([k for k in keys if k[:20] != best[:20]])
+                    if other_key:
+                        reserved2 = await rotation.reserve_key(other_key)
+                        if reserved2:
+                            try:
+                                if lease_renewal_task:
+                                    lease_renewal_task.cancel()
+                                lease_renewal_task = asyncio.create_task(_renew_lease_loop())
+                                result = await self._fetch_with_keys([other_key], url, render_js, country, redis_conn, rotation)
+                            finally:
+                                await rotation.release_key(other_key)
+                if result is None and await self._is_quota_exhausted(redis_conn):
+                    return await self._wait_for_quota(url, render_js, country, redis_conn)
+                return result
+            finally:
+                if lease_renewal_task:
+                    lease_renewal_task.cancel()
+                await rotation.release_key(best)
         finally:
             await self._release_global_sem(redis_conn)
 

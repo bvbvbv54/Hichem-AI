@@ -8,6 +8,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
 from pydantic import BaseModel
@@ -133,9 +134,16 @@ async def upload_products(
 
     product_list = []
     skipped_previously_completed = 0
+    skipped_banned_domain = 0
+    _BANNED = {"jd.com", "taobao.com", "temu.com"}
     for product in parse_result.products:
         url = product.product_url
         if url:
+            pd = urlparse(url).netloc.replace("www.", "")
+            if any(d in pd for d in _BANNED):
+                skipped_banned_domain += 1
+                logger.warning("upload_banned_domain_skipped", url=url, domain=pd)
+                continue
             url_hash = hashlib.sha256(url.encode()).hexdigest()
             existing = await session.execute(
                 select(ProductLink).where(ProductLink.url_hash == url_hash)

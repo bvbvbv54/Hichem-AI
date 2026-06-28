@@ -400,7 +400,8 @@ async def toggle_storage(
 async def get_scrapfly_usage(
     session: AsyncSession = Depends(get_session),
 ):
-    COST_PER_SCRAPE = 6
+    COST_PER_SCRAPE = 12
+    COST_PER_PRODUCT = 12
     CREDITS_PER_KEY = 1000
     import asyncio
     import httpx
@@ -433,22 +434,28 @@ async def get_scrapfly_usage(
     total_credits = key_count * CREDITS_PER_KEY
     remaining = max(0, total_credits - total_used)
     scrapes_possible = remaining // COST_PER_SCRAPE if COST_PER_SCRAPE > 0 else 0
+    products_possible = remaining // COST_PER_PRODUCT if COST_PER_PRODUCT > 0 else 0
 
     per_key_remaining = []
     per_key_summary = []
     for key, result in zip(keys, results):
         short = key[:20]
+        key_remaining = result["remaining"]
+        key_products = max(0, key_remaining // COST_PER_PRODUCT)
         per_key_remaining.append({
             "key_preview": short + "...",
             "full_key": key,
             "used": result["used"],
             "remaining": result["remaining"],
+            "estimated_scrapes": key_products,
+            "cost_per_scrape_estimate": COST_PER_SCRAPE,
             "status": "tracked" if result["ok"] else "unreachable",
         })
         per_key_summary.append({
             "key": short + "...",
             "used": result["used"],
             "remaining": result["remaining"],
+            "estimated_scrapes": key_products,
             "status": "tracked" if result["ok"] else "unreachable",
         })
 
@@ -456,22 +463,42 @@ async def get_scrapfly_usage(
         "total_cost": total_used,
         "total_requests": total_used,
         "avg_cost_per_request": round(total_used / key_count, 1) if key_count > 0 else 0,
-        "cost_per_product": COST_PER_SCRAPE,
+        "cost_per_product": COST_PER_PRODUCT,
         "remaining_credits": remaining,
         "has_usage_data": total_used > 0,
         "monthly_budget": total_credits,
         "budget_left": remaining,
-        "scrapes_remaining_budget": scrapes_possible,
-        "scrapes_remaining_actual": scrapes_possible,
+        "scrapes_remaining_budget": products_possible,
+        "scrapes_remaining_actual": products_possible,
         "per_key_summary": per_key_summary,
-        "products_possible": scrapes_possible,
+        "products_possible": products_possible,
         "per_key": {},
         "keys": per_key_remaining,
         "key_count": key_count,
         "total_credits": total_credits,
         "successful_scrapes": total_used,
         "cost_per_scrape": COST_PER_SCRAPE,
+        "estimated_products": products_possible,
     }
+
+
+@router.get("/scrapfly/metrics", summary="Get Scrapfly rotation metrics")
+async def get_scrapfly_rotation_metrics():
+    from services.scrapfly_rotation import KeyStateManager
+    from services.acquisition.scrapfly_client import ScrapflyClient
+    from configs.settings import settings
+    import redis.asyncio as aioredis
+    try:
+        redis_conn = await aioredis.from_url(settings.redis_url, socket_connect_timeout=5)
+        mgr = KeyStateManager(redis_conn)
+        metrics = await mgr.get_metrics()
+        await redis_conn.aclose()
+        return metrics
+    except Exception as e:
+        from configs.logging import get_logger
+        logger = get_logger(__name__)
+        logger.warning("scrapfly_metrics_failed", error=str(e))
+        return {"error": str(e)}
 
 
 @router.get("/scrapfly/keys", summary="List all Scrapfly API keys")
@@ -527,6 +554,25 @@ async def add_scrapfly_key(
     except Exception:
         pass
 
+    # Initialize rotation state for the new key
+    try:
+        from services.scrapfly_rotation import KeyStateManager, STATE_KEY, DEFAULT_CREDITS
+        mgr = KeyStateManager(redis)
+        key_short = key[:20]
+        from services.scrapfly_rotation import KeyState
+        state = KeyState(key=key_short, status="UNKNOWN", estimated_credits_remaining=DEFAULT_CREDITS)
+        await mgr._save_state(state)
+        logger.info("scrapfly_rotation_state_initialized_for_new_key", key=key_short)
+    except Exception as e:
+        logger.warning("scrapfly_rotation_init_failed", error=str(e))
+
+    # Invalidate the in-memory reset-dates cache so next fetch picks up the new key
+    try:
+        from services.acquisition.scrapfly_client import _RESET_DATES_CACHE
+        _RESET_DATES_CACHE.clear()
+    except Exception:
+        pass
+
     return {"status": "added", "key_preview": key[:20] + "...", "is_new": is_new}
 
 
@@ -534,6 +580,7 @@ async def add_scrapfly_key(
 async def remove_scrapfly_key(
     body: dict,
     session: AsyncSession = Depends(get_session),
+    redis: aioredis.Redis = Depends(get_redis),
 ):
     key = body.get("key", "").strip()
     if not key:
@@ -541,6 +588,17 @@ async def remove_scrapfly_key(
     from services.scrapfly_key_manager import remove_key
 
     await remove_key(key, session)
+
+    # Clean up rotation state for the removed key
+    try:
+        from services.scrapfly_rotation import STATE_KEY, RESERVATION_KEY
+        key_short = key[:20]
+        await redis.delete(f"{STATE_KEY}{key_short}")
+        await redis.delete(f"{RESERVATION_KEY}{key_short}")
+        logger.info("scrapfly_rotation_state_cleaned_for_removed_key", key=key_short)
+    except Exception as e:
+        logger.warning("scrapfly_rotation_cleanup_failed", error=str(e))
+
     return {"status": "removed", "key_preview": key[:20] + "..."}
 
 

@@ -14,6 +14,7 @@ class FailureType(str, Enum):
     PAGE_STRUCTURE_CHANGED = "page_structure_changed"
     BOT_BLOCKED = "bot_blocked"
     ROBOTS_DISALLOWED = "robots_disallowed"
+    DOMAIN_BANNED = "domain_banned"
 
 
 @dataclass

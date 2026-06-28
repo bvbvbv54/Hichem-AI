@@ -13,9 +13,10 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 
 import { toast } from "@/hooks/use-toast";
-import { Upload, FileSpreadsheet, CheckCircle2, Loader2, AlertTriangle, Settings2, Image, Sparkles, ToggleLeft, ExternalLink } from "lucide-react";
+import { Upload, FileSpreadsheet, CheckCircle2, Loader2, AlertTriangle, Settings2, Image, Sparkles, Trash2, CloudOff, ExternalLink } from "lucide-react";
 import { formatFileSize } from "@/lib/utils";
 
 type UploadState = "idle" | "uploading" | "parsed" | "configuring" | "generating" | "done" | "scraped_only";
@@ -31,6 +32,7 @@ export default function UploadPage() {
   const [totalOutput, setTotalOutput] = useState<number>(0);
   const [imageDescriptions, setImageDescriptions] = useState<string[]>([]);
   const [generationResult, setGenerationResult] = useState<any>(null);
+  const [clearDialogOpen, setClearDialogOpen] = useState(false);
   const queryClient = useQueryClient();
 
   const { data: projectsData } = useQuery({
@@ -43,14 +45,38 @@ export default function UploadPage() {
     queryFn: () => api.getProviderKeys(),
   });
 
+  const { data: driveStatus } = useQuery({
+    queryKey: ["drive-status"],
+    queryFn: () => api.getDriveStatus(),
+  });
+
   const hasAnyApiKey = providerKeys && Object.values(providerKeys).some((v: any) => v?.configured);
+  const isDriveConnected = driveStatus?.authenticated === true;
+
+  const clearMutation = useMutation({
+    mutationFn: () => api.clearAllData(),
+    onSuccess: (data) => {
+      setClearDialogOpen(false);
+      setState("idle");
+      setFile(null);
+      setUploadResult(null);
+      setGenerationResult(null);
+      setProjectId("");
+      queryClient.invalidateQueries();
+      toast({ title: "All data cleared", description: data.message, variant: "success" });
+    },
+    onError: (err: any) => {
+      setClearDialogOpen(false);
+      toast({ title: "Failed to clear data", description: err.message, variant: "destructive" });
+    },
+  });
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
     const f = acceptedFiles[0];
     if (f) {
       const ext = f.name.split(".").pop()?.toLowerCase();
-      if (ext !== "xlsx") {
-        toast({ title: "Invalid file", description: "Only .xlsx files are supported", variant: "destructive" });
+      if (ext !== "xlsx" && ext !== "csv") {
+        toast({ title: "Invalid file", description: "Only .xlsx and .csv files are supported", variant: "destructive" });
         return;
       }
       setFile(f);
@@ -62,12 +88,20 @@ export default function UploadPage() {
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
-    accept: { "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"] },
+    accept: {
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"],
+      "text/csv": [".csv"],
+      "text/plain": [".csv"],
+    },
     maxFiles: 1,
   });
 
   const handleUpload = async () => {
     if (!file) return;
+    if (!projectId) {
+      toast({ title: "Project required", description: "Please select a project before uploading.", variant: "destructive" });
+      return;
+    }
     setState("uploading");
     try {
       const result = await api.uploadFile(file, projectId);
@@ -129,10 +163,64 @@ export default function UploadPage() {
 
   return (
     <div className="space-y-6 max-w-3xl">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Upload Products</h1>
-        <p className="text-muted-foreground">Upload Excel, configure generation, and let AI create product images</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Upload Products</h1>
+          <p className="text-muted-foreground">Upload Excel or CSV, configure generation, and let AI create product images</p>
+        </div>
+        <Dialog open={clearDialogOpen} onOpenChange={setClearDialogOpen}>
+          <DialogTrigger asChild>
+            <Button variant="outline" size="sm" className="text-destructive border-destructive/30 hover:bg-destructive/10">
+              <Trash2 className="h-4 w-4 mr-1" /> Clear Data & Start Fresh
+            </Button>
+          </DialogTrigger>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Clear All Data?</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4 pt-4">
+              <p className="text-sm text-muted-foreground">
+                This will permanently delete all scraped products, jobs, assets, and cached data. Your projects and settings will be preserved. This action cannot be undone.
+              </p>
+              <Button
+                onClick={() => clearMutation.mutate()}
+                disabled={clearMutation.isPending}
+                variant="destructive"
+                className="w-full"
+              >
+                {clearMutation.isPending ? (
+                  <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Clearing...</>
+                ) : (
+                  <><Trash2 className="h-4 w-4 mr-2" /> Yes, Clear Everything</>
+                )}
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
       </div>
+
+      {/* Drive not connected warning */}
+      {state === "idle" && !isDriveConnected && (
+        <Card className="border-amber-300 bg-amber-50 dark:bg-amber-950/20">
+          <CardContent className="p-4 flex items-start gap-3">
+            <CloudOff className="h-5 w-5 text-amber-600 mt-0.5 shrink-0" />
+            <div className="space-y-1">
+              <p className="font-medium text-amber-800 dark:text-amber-300">Google Drive Not Connected</p>
+              <p className="text-sm text-amber-700 dark:text-amber-400">
+                Scraped images will be saved locally. To save directly to Google Drive, go to <strong>Settings</strong> and configure your Google Drive service account.
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="mt-2 border-amber-400 text-amber-800 dark:text-amber-300"
+                onClick={() => window.location.href = "/settings"}
+              >
+                <ExternalLink className="h-3.5 w-3.5 mr-1" /> Connect Drive
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Step Indicator */}
       <div className="flex items-center gap-2 text-sm">
@@ -155,14 +243,22 @@ export default function UploadPage() {
       {/* Step 1: Upload */}
       {(state === "idle" || state === "uploading") && (
         <>
-          <Card>
+          <Card className={!projectId ? "border-destructive/50" : ""}>
             <CardHeader>
-              <CardTitle className="text-lg">Select Project</CardTitle>
+              <CardTitle className="text-lg flex items-center gap-2">
+                Select Project
+                {!projectId && <Badge variant="destructive" className="text-xs">Required</Badge>}
+              </CardTitle>
+              {!projectId && (
+                <CardDescription className="text-destructive">
+                  You must select a project before uploading. Create one in Projects if none exist.
+                </CardDescription>
+              )}
             </CardHeader>
             <CardContent>
               <Select value={projectId} onValueChange={setProjectId}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Choose a project" />
+                <SelectTrigger className={!projectId ? "border-destructive" : ""}>
+                  <SelectValue placeholder="Choose a project (required)" />
                 </SelectTrigger>
                 <SelectContent>
                   {projects.map((p: any) => (
@@ -170,13 +266,18 @@ export default function UploadPage() {
                   ))}
                 </SelectContent>
               </Select>
+              {projects.length === 0 && (
+                <p className="text-xs text-muted-foreground mt-2">
+                  No projects yet. Create one in the Projects section first.
+                </p>
+              )}
             </CardContent>
           </Card>
 
           <Card>
             <CardHeader>
-              <CardTitle className="text-lg">Upload Excel File</CardTitle>
-              <CardDescription>Your spreadsheet must have a column named &quot;URL&quot;, &quot;Link&quot;, or &quot;Product URL&quot; with product links</CardDescription>
+              <CardTitle className="text-lg">Upload File</CardTitle>
+              <CardDescription>Your file must have a column named &quot;URL&quot;, &quot;Link&quot;, or &quot;Product URL&quot; with product links</CardDescription>
             </CardHeader>
             <CardContent>
               <div
@@ -194,7 +295,7 @@ export default function UploadPage() {
                 ) : (
                   <div className="space-y-2">
                     <Upload className="h-12 w-12 mx-auto text-muted-foreground" />
-                    <p className="font-medium">Drop your .xlsx file here</p>
+                    <p className="font-medium">Drop your .xlsx or .csv file here</p>
                     <p className="text-sm text-muted-foreground">Must contain a column with product URLs</p>
                   </div>
                 )}
@@ -203,13 +304,25 @@ export default function UploadPage() {
           </Card>
 
           {file && (
-            <Button onClick={handleUpload} disabled={state === "uploading"} className="w-full" size="lg">
-              {state === "uploading" ? (
-                <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Parsing & Scraping...</>
-              ) : (
-                <><Upload className="h-4 w-4 mr-2" /> Upload & Parse</>
+            <div className="space-y-2">
+              {!projectId && (
+                <p className="text-xs text-destructive font-medium flex items-center gap-1">
+                  <AlertTriangle className="h-3 w-3" /> Select a project above to enable uploading
+                </p>
               )}
-            </Button>
+              <Button
+                onClick={handleUpload}
+                disabled={state === "uploading" || !projectId}
+                className="w-full"
+                size="lg"
+              >
+                {state === "uploading" ? (
+                  <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Parsing & Scraping...</>
+                ) : (
+                  <><Upload className="h-4 w-4 mr-2" /> Upload & Parse</>
+                )}
+              </Button>
+            </div>
           )}
         </>
       )}
@@ -348,6 +461,29 @@ export default function UploadPage() {
             </CardContent>
           </Card>
 
+          {/* Drive not connected warning during configure */}
+          {!isDriveConnected && (
+            <div className="rounded-lg bg-amber-50 border border-amber-200 p-4">
+              <div className="flex items-start gap-3">
+                <CloudOff className="h-5 w-5 text-amber-600 mt-0.5 shrink-0" />
+                <div className="space-y-1">
+                  <p className="font-medium text-amber-800">Google Drive Not Connected</p>
+                  <p className="text-sm text-amber-700">
+                    Generated images will be saved locally. To save directly to Google Drive, configure your service account in <strong>Settings</strong>.
+                  </p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="mt-1 border-amber-400 text-amber-800"
+                    onClick={() => window.location.href = "/settings"}
+                  >
+                    <ExternalLink className="h-3.5 w-3.5 mr-1" /> Connect Drive
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+
           <Button onClick={handleGenerate} className="w-full" size="lg">
             <Image className="h-4 w-4 mr-2" />
             Generate {totalOutput} Images
@@ -389,6 +525,20 @@ export default function UploadPage() {
                   </div>
                 </div>
               </div>
+
+              {!isDriveConnected && (
+                <div className="rounded-lg bg-amber-50 border border-amber-200 p-4">
+                  <div className="flex items-start gap-3">
+                    <CloudOff className="h-5 w-5 text-amber-600 mt-0.5 shrink-0" />
+                    <div className="space-y-1">
+                      <p className="font-medium text-amber-800">Google Drive Not Connected</p>
+                      <p className="text-sm text-amber-700">
+                        Scraped images will be saved locally. To save directly to Google Drive, go to <strong>Settings</strong> and configure your service account.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div className="flex gap-3">
                 <Button variant="outline" className="flex-1" onClick={() => { setState("idle"); setFile(null); setUploadResult(null); }}>
@@ -441,8 +591,9 @@ export default function UploadPage() {
             <CardTitle className="text-lg">Requirements</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2 text-sm">
-            <div className="flex items-center gap-2"><Badge variant="outline">XLSX</Badge><span className="text-muted-foreground">Excel file with a column named &quot;URL&quot;, &quot;Link&quot;, or &quot;Product URL&quot;</span></div>
+            <div className="flex items-center gap-2"><Badge variant="outline">XLSX / CSV</Badge><span className="text-muted-foreground">File with a column named &quot;URL&quot;, &quot;Link&quot;, or &quot;Product URL&quot;</span></div>
             <div className="flex items-center gap-2"><Badge variant="outline">URLs</Badge><span className="text-muted-foreground">At least 1 product link starting with http:// or https://</span></div>
+            <div className="flex items-center gap-2"><Badge variant="outline">Project</Badge><span className="text-muted-foreground">A project must be selected (required)</span></div>
             <div className="mt-3 p-3 rounded-lg bg-muted">
               <p className="font-medium text-xs flex items-center gap-2"><AlertTriangle className="h-3 w-3 text-warning" /> Empty or invalid URLs will be rejected with a clear error</p>
             </div>

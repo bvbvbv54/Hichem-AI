@@ -31,6 +31,83 @@ Thumbs.db
 # Docker
 docker-data/
 
+# Node / Dashboard
+node_modules/
+.next/
+next-env.d.ts
+package-lock.json
+
+# Test images & scratch files
+test_images/
+images/
+alibaba_output/
+
+# Debug scripts (one-off investigations)
+analyze_dhgate.py
+check_1688.py
+check_aliexpress.py
+check_aliexpress2.py
+check_mic.py
+check_mic2.py
+check_mic3.py
+check_raw_html.py
+check_temu_api.py
+comprehensive_scraper.py
+debug_alibaba.py
+debug_amazon2.py
+debug_amazon_clean.py
+debug_amazon_quick.py
+debug_amazon_step.py
+debug_dhgate.py
+debug_galleries.py
+debug_gallery.py
+debug_mobile.py
+debug_remaining.py
+debug_sites.py
+debug_taobao_jd.py
+dhgate_alt.py
+dhgate_api.py
+dhgate_deep.py
+dhgate_inspect.py
+dhgate_last_try.py
+dhgate_playwright.py
+dhgate_test.py
+dhgate_via_wayback.py
+fetch_dhgate.py
+fetch_dhgate_verified.py
+fetch_dits.py
+final_report.py
+final_report2.py
+find_dhgate.py
+fix_alibaba_dhgate_v2.py
+fix_remaining.py
+inspect_dhgate.py
+investigate_mic.py
+rescue_failures.py
+scraper_final.py
+scraper_v2.py
+temu_debug.py
+test_all_products.py
+test_all_v2.py
+test_amazon_alt.py
+test_amazon_direct.py
+test_amazon_images_page.py
+test_amazon_mobile.py
+test_amazon_v2.py
+test_debug_blocked.py
+test_firefox_amazon.py
+test_fixed.py
+test_html_inspect.py
+test_image_domains.py
+test_image_extraction.py
+test_mic.py
+test_rest_v2.py
+test_scrapfly.py
+test_scrapfly_deep.py
+wayback_dhgate.py
+test.db
+test_admin_report.json
+
 # Outputs
 outputs/*
 

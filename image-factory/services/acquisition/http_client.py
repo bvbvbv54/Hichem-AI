@@ -63,13 +63,14 @@ class HardenedHTTPClient:
             timeout=httpx.Timeout(
                 connect=settings.scraper_connect_timeout,
                 read=settings.scraper_read_timeout,
-                write=10.0,
-                pool=10.0,
+                write=30.0,
+                pool=30.0,
             ),
             follow_redirects=True,
             cookies=httpx.Cookies(),
         )
         self._cookies_per_domain: dict[str, dict[str, str]] = {}
+        self._current_proxy: str | None = None
 
     async def _wait_delay(self) -> None:
         if settings.request_delay_enabled:
@@ -93,6 +94,7 @@ class HardenedHTTPClient:
         if domain_cookies:
             for key, value in domain_cookies.items():
                 self.client.cookies.set(key, value, domain=domain)
+        self._current_proxy = proxy
         if proxy:
             kwargs["proxy"] = proxy
         elif settings.request_delay_enabled:
@@ -110,8 +112,28 @@ class HardenedHTTPClient:
 
     @retry(
         stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=lambda attempt: 1.0 * (2 ** attempt) + random.uniform(0, 1)),
-        retry=retry_if_exception_type((httpx.TimeoutException, httpx.HTTPStatusError)),
+        wait=wait_exponential(multiplier=lambda attempt: 2.0 * (2 ** attempt) + random.uniform(0, 1)),
+        retry=retry_if_exception_type((
+            httpx.TimeoutException,
+            httpx.HTTPStatusError,
+            httpx.ConnectError,
+            httpx.RemoteProtocolError,
+            httpx.TransportError,
+            httpx.ProxyError,
+            httpx.ReadError,
+            httpx.WriteError,
+        )),
     )
     async def _retry_get(self, url: str, **kwargs: Any) -> httpx.Response:
-        return await self.get(url, **kwargs)
+        try:
+            return await self.get(url, **kwargs)
+        except httpx.HTTPStatusError:
+            raise
+        except (httpx.ConnectError, httpx.ProxyError, httpx.RemoteProtocolError, httpx.TransportError):
+            if self._current_proxy:
+                await self.proxy_manager.mark_proxy_failed(self._current_proxy)
+            self.rotate_headers()
+            raise
+        except Exception:
+            self.rotate_headers()
+            raise

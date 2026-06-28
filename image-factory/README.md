@@ -21,9 +21,9 @@ Extracts product images from Chinese e-commerce sites via Scrapfly (CN-routed wi
 | **1688.com** | Fixed | `_extract_1688_gallery()` | IIFE JSON (`offerImgList`) + raw-HTML regex fallback |
 | **alibaba.com** | Fixed | `_extract_alibaba_gallery()` | JSON-LD `Product.image` + raw-HTML alicdn regex fallback |
 | **aliexpress.com** | Fixed | Generic `extract_image_urls()` | Placeholder GIF rejected by SHA256 hash |
-| **amazon.com** | ❌ To Do | — | Only 1 of many gallery images extracted |
-| **dhgate.com** | ❌ To Do | — | Color-swatch + "More Choices" carousel pollution |
-| **made-in-china.com** | ❌ To Do | — | Zero extraction despite accessible page |
+| **amazon.com** | Fixed | `_extract_amazon_color_images_from_script()` | 7/7 main product images from `colorImages` JSON script, 0 contamination |
+| **dhgate.com** | Fixed | `_extract_dhgate_gallery()` | `ul[spm-c="imagelist"]` gallery, `/m/0x0/` full-res upgrade, alt-text swatch/recommended rejection |
+| **made-in-china.com** | Fixed | `_extract_mic_gallery()` | JSON-LD + `div.J-pic-list-wrap` gallery, `43f34j00`/`206f0j00` garbage filtered, 5 images per product |
 | **jd.com** | ❌ To Do | Ban list | Block at the URL level |
 | **taobao.com** | ❌ To Do | Ban list | Block at the URL level |
 | **temu.com** | ❌ To Do | CAPTCHA | Needs mitigation strategy |
@@ -61,13 +61,10 @@ Add new hashes to `image_downloader._KNOWN_REJECTED_HASHES` or the `global_rejec
 ## To Do Next
 
 | # | Prompt | Site | Problem | Approach |
-|---|--------|------|---------|----------|
-| 4 | **Amazon** | amazon.com | Only 1 of many gallery images extracted | Investigate page structure — likely JS-loaded image gallery in `data-a-dynamic-image` or `data-old-hires` attributes |
-| 5 | **DHgate** | dhgate.com | Color-swatch + "More Choices" carousel images pollute results | Add `dhgate.com` to `DOMAIN_IMAGE_EXTRACTORS` with scoped selectors from `profiles/dhgate.json`; reject swatch thumbnails by URL pattern |
-| 6 | **Made-in-China** | made-in-china.com | Zero extraction despite accessible page | Check `_CN_PRIMARY_DOMAINS` routing, add domain-specific extractor |
-| 7 | **Ban List** | jd.com, taobao.com | CAPTCHA blocks all extraction | Add to domain ban list at URL level — fail fast with clear reason |
-| 8 | **Temu** | temu.com | CAPTCHA on all automated access | Implement realistic CAPTCHA mitigation — session reuse, rate limiting, or honest failure |
-| 9 | **Final Validation** | All sites | Run all fixes end-to-end | Run `AcquisitionPipeline.run()` against live URLs for all fixed sites simultaneously |
+| |---|--------|------|---------|----------|
+| 1 | **Ban List** | jd.com, taobao.com | CAPTCHA blocks all extraction | Add to domain ban list at URL level — fail fast with clear reason |
+| 2 | **Temu** | temu.com | CAPTCHA on all automated access | Implement realistic CAPTCHA mitigation — session reuse, rate limiting, or honest failure |
+| 3 | **Final Validation** | All sites | Run all fixes end-to-end | Run `AcquisitionPipeline.run()` against live URLs for all fixed sites simultaneously |
 
 ---
 

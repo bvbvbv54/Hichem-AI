@@ -27,6 +27,7 @@ logger = get_logger(__name__)
 _CN_PRIMARY_DOMAINS = {"1688.com", "taobao.com", "tmall.com", "detail.1688.com", "alibaba.com", "aliexpress.com"}
 _VALIDATE_PAGE_DOMAINS = {"alibaba.com", "www.alibaba.com"}
 _AMAZON_DOMAINS = {"amazon.com", "amazon.co.uk", "amazon.de", "amazon.fr", "amazon.it", "amazon.es", "amazon.ca", "amazon.in", "amazon.com.au", "amazon.com.br", "amazon.com.mx", "amazon.nl", "amazon.pl", "amazon.se", "amazon.sg", "amazon.ae", "amazon.sa"}
+BANNED_DOMAINS = {"jd.com", "taobao.com", "temu.com"}
 
 _CAPTCHA_TITLES = {
     "验证码拦截", "just a moment", "please wait", "attention required",
@@ -136,6 +137,17 @@ class AcquisitionPipeline:
 
         logger.info("pipeline_start", job_id=job.job_id, url=job.url)
 
+        if any(d in domain for d in BANNED_DOMAINS):
+            logger.info("domain_banned_skipped", job_id=job.job_id, url=job.url, domain=domain)
+            return AcquisitionResult(
+                job_id=job.job_id,
+                url=job.url,
+                success=False,
+                failure_type=FailureType.DOMAIN_BANNED,
+                failure_detail=f"{domain} is not supported — this domain has been permanently banned (login wall / CAPTCHA / no anonymous access). No network call was made.",
+                duration_ms=0,
+            )
+
         if await self.queue.is_restricted(domain):
             return AcquisitionResult(
                 job_id=job.job_id,
@@ -189,6 +201,7 @@ class AcquisitionPipeline:
                 FailureType.BOT_BLOCKED: ErrorCode.ACQ_BOT_BLOCKED,
                 FailureType.RATE_LIMITED: ErrorCode.ACQ_RATE_LIMITED,
                 FailureType.TIMEOUT: ErrorCode.ACQ_TIMEOUT,
+                FailureType.DOMAIN_BANNED: ErrorCode.ACQ_BOT_BLOCKED,
             }
             code = code_map.get(failure_type, ErrorCode.ACQ_NETWORK_ERROR)
             severity = ErrorSeverity.WARNING if failure_type in (FailureType.CAPTCHA, FailureType.BOT_BLOCKED) else ErrorSeverity.INFO
@@ -306,12 +319,6 @@ class AcquisitionPipeline:
                     page_title = extract_page_title(browser_html) or page_title
                     page_description = extract_page_description(browser_html) or page_description
 
-        if not image_urls and "temu.com" in job.url:
-            logger.info("falling_back_to_temu_api", url=job.url)
-            temu_urls = await _fetch_temu_images(job.url)
-            if temu_urls:
-                image_urls = temu_urls[:job.max_images]
-
         if not image_urls:
             result = AcquisitionResult(
                 job_id=job.job_id,
@@ -382,6 +389,9 @@ class AcquisitionPipeline:
 
     async def _fetch_page(self, url: str) -> tuple[str | None, bool, list[str], FailureType | None, str | None]:
         domain = urlparse(url).netloc.replace("www.", "")
+
+        if any(d in domain for d in BANNED_DOMAINS):
+            return None, False, [], FailureType.DOMAIN_BANNED, f"{domain} is on the permanent ban list"
 
         # For Chinese e-commerce sites, use Scrapfly with country=cn as primary
         is_cn_domain = any(d in domain for d in _CN_PRIMARY_DOMAINS)

@@ -798,6 +798,300 @@ def validate_product_page(url: str, html: str) -> tuple[bool, str]:
     return True, ""
 
 
+def _upgrade_dhgate_url(url: str) -> str:
+    """Upgrade a DHgate thumbnail URL to full resolution by swapping size token to 0x0."""
+    # Handle protocol-relative URLs
+    if url.startswith("//"):
+        url = "https:" + url
+    # Swap /m/SIZExSIZE/ to /m/0x0/ for full resolution
+    upgraded = re.sub(r"/m/\d+x\d+/", "/m/0x0/", url)
+    return upgraded
+
+
+def _extract_dhgate_gallery(html: str, page_url: str) -> list[str]:
+    """Extract product images from DHgate, scoped to gallery container only.
+
+    DHgate uses Next.js with CSS-module class names (randomized per build), so
+    we rely on stable attributes:
+      - `ul[spm-c="imagelist"]` — the thumbnail gallery strip
+      - `id="masterImg"` — the main large display image
+
+    All gallery thumbnails share the same product-description alt text.  URL size
+    tokens (`/m/100x100/`) are upgraded to `/m/0x0/` for full resolution.
+
+    Color swatches (`img[preview="false"]`, `alt` starting with `#`) and
+    recommended/related-product images (different URL paths or alt text) are
+    excluded by attribute checks, not size.
+    """
+    soup = BeautifulSoup(html, "lxml")
+    seen: set[str] = set()
+    gallery_urls: set[str] = set()
+
+    def is_color_swatch(img) -> bool:
+        alt = (img.get("alt") or "")
+        return img.get("preview") == "false" or alt.startswith("#")
+
+    def is_contaminated(img) -> bool:
+        """Check if image is NOT a product gallery image."""
+        alt = (img.get("alt") or "").strip()
+        src = (img.get("src") or "").strip()
+        # Empty alt or data: placeholders
+        if not alt or not src or src.startswith("data:"):
+            return True
+        # Color swatches
+        if is_color_swatch(img):
+            return True
+        # Recommended products have very different alt text (other products)
+        # Gallery images all share a long descriptive product alt
+        return False
+
+    def extract_src(img) -> str:
+        src = img.get("src") or img.get("data-src") or ""
+        if src.startswith("//"):
+            src = "https:" + src
+        return src
+
+    def get_product_alt_text() -> str:
+        """Find the common alt text from gallery thumbnails."""
+        ul = soup.select_one('ul[spm-c="imagelist"]')
+        if ul:
+            for li in ul.find_all("li"):
+                img = li.find("img")
+                if img and img.get("alt"):
+                    alt = img.get("alt", "").strip()
+                    if alt and not alt.startswith("#"):
+                        return alt
+        # Fallback: look for the page title
+        title = soup.find("title")
+        if title:
+            return title.get_text(strip=True)
+        return ""
+
+    # Strategy 1: primary — ul[spm-c="imagelist"] (stable Next.js attribute)
+    ul = soup.select_one('ul[spm-c="imagelist"]')
+    if ul:
+        for li in ul.find_all("li"):
+            img = li.find("img")
+            if img and not is_contaminated(img):
+                src = extract_src(img)
+                if src and "dhresource" in src:
+                    upgraded = _upgrade_dhgate_url(src)
+                    if upgraded not in seen:
+                        seen.add(upgraded)
+                        gallery_urls.add(upgraded)
+
+    # Strategy 2: masterImg (if not already found via gallery)
+    if not gallery_urls:
+        master = soup.select_one("#masterImg")
+        if master:
+            src = extract_src(master)
+            if src and "dhresource" in src and src not in seen:
+                upgraded = _upgrade_dhgate_url(src)
+                seen.add(upgraded)
+                gallery_urls.add(upgraded)
+
+    # Strategy 3: alt-text-based fallback (for pages with different DOM structure)
+    if not gallery_urls:
+        product_alt = get_product_alt_text()
+        if product_alt:
+            for img in soup.find_all("img"):
+                if is_contaminated(img):
+                    continue
+                src = extract_src(img)
+                if not src or "dhresource" not in src:
+                    continue
+                alt = (img.get("alt") or "").strip()
+                # Gallery thumbnails share a long common prefix of the product alt
+                if alt and (alt == product_alt or product_alt.startswith(alt[:30]) or alt.startswith(product_alt[:30])):
+                    if src not in seen:
+                        upgraded = _upgrade_dhgate_url(src)
+                        seen.add(upgraded)
+                        gallery_urls.add(upgraded)
+
+    # Strategy 4: embedded JSON (__NEXT_DATA__, etc.)
+    if not gallery_urls:
+        for script in soup.find_all("script"):
+            script_text = script.string or ""
+            if script.get("id") == "__NEXT_DATA__":
+                try:
+                    data = json.loads(script_text)
+                    for val in _walk_json_for_images(data):
+                        if val not in seen and _looks_like_product_image(val):
+                            seen.add(val)
+                            upgraded = _upgrade_dhgate_url(val)
+                            gallery_urls.add(upgraded)
+                except json.JSONDecodeError:
+                    pass
+            if "__INITIAL_STATE__" in script_text or "window.__INITIAL_STATE__" in script_text:
+                match = re.search(r"window\.__INITIAL_STATE__\s*=\s*({.*?});", script_text, re.DOTALL)
+                if match:
+                    try:
+                        data = json.loads(match.group(1))
+                        for val in _walk_json_for_images(data):
+                            if val not in seen and _looks_like_product_image(val):
+                                seen.add(val)
+                                upgraded = _upgrade_dhgate_url(val)
+                                gallery_urls.add(upgraded)
+                    except json.JSONDecodeError:
+                        pass
+
+    # Strategy 5: CDN regex fallback (last resort)
+    if not gallery_urls:
+        for pat, _label in _CDN_PATTERNS:
+            if "dhresource" in _label:
+                for m in pat.finditer(html):
+                    url = m.group(0)
+                    if url not in seen and _looks_like_product_image(url):
+                        seen.add(url)
+                        upgraded = _upgrade_dhgate_url(url)
+                        gallery_urls.add(upgraded)
+
+    if gallery_urls:
+        urls = list(gallery_urls)
+        urls.sort(key=_img_quality, reverse=True)
+        return urls
+    return []
+
+
+def _walk_json_for_images(data: Any) -> list[str]:
+    """Recursively walk a parsed JSON tree to find image URLs on dhresource CDN."""
+    results: list[str] = []
+    if isinstance(data, dict):
+        for v in data.values():
+            results.extend(_walk_json_for_images(v))
+    elif isinstance(data, list):
+        for item in data:
+            results.extend(_walk_json_for_images(item))
+    elif isinstance(data, str) and "dhresource" in data and _IMAGE_EXT.search(data):
+        results.append(data)
+    return results
+
+
+def _extract_mic_gallery(html: str, page_url: str) -> list[str]:
+    """Extract product images from made-in-china.com product pages.
+
+    Multi-strategy: JSON-LD (authoritative full-res), then gallery container,
+    then broader data-original scan.  Deduplicates by unique image ID,
+    keeping the best-resolution variant per image.
+    """
+    soup = BeautifulSoup(html, "lxml")
+    seen: set[str] = set()
+    urls: list[str] = []
+
+    # Strategy 1: JSON-LD (most authoritative, full resolution)
+    for u in _extract_json_ld_images(soup):
+        if u not in seen:
+            seen.add(u)
+            urls.append(u)
+
+    # Strategy 2: Gallery container (stable JS-hook class)
+    gallery = soup.select_one("div.J-pic-list-wrap")
+    if gallery:
+        for img in gallery.find_all("img"):
+            for attr in ("data-original", "src"):
+                val = img.get(attr, "")
+                if val:
+                    absolute = urljoin(page_url, val)
+                    if _is_mic_image(absolute) and absolute not in seen:
+                        seen.add(absolute)
+                        urls.append(absolute)
+
+    # Strategy 3: Broader data-original scan for different-angle images
+    for img in soup.find_all("img"):
+        dor = img.get("data-original", "")
+        if dor:
+            absolute = urljoin(page_url, dor)
+            if _is_mic_image(absolute) and absolute not in seen:
+                seen.add(absolute)
+                urls.append(absolute)
+
+    if not urls:
+        # Fall back to generic extractor for unusual page structures
+        generic = extract_image_urls(html, page_url)
+        for u in generic:
+            if _is_mic_image(u) and u not in seen:
+                seen.add(u)
+                urls.append(u)
+
+    if not urls:
+        return []
+
+    urls = _dedup_mic_urls(urls)
+    return urls[:5]
+
+
+_MIC_CDN_ID = re.compile(r"image\.made-in-china\.com/([a-zA-Z0-9]+)/")
+
+
+def _is_mic_image(url: str) -> bool:
+    """Strictly validate a made-in-china.com image URL is a genuine product image."""
+    if not _looks_like_product_image(url):
+        return False
+    lower = url.lower()
+    if "image.made-in-china.com" not in lower:
+        return False
+    if "/43f34j00" in lower:    # recommended products from other sellers
+        return False
+    if "/206f0j00" in lower:    # company logo / banner
+        return False
+    if "/318f0j00" in lower or "/229f0j00" in lower or "/313f0j00" in lower:
+        return False
+    if "-mp4." in lower:        # video thumbnail
+        return False
+    return True
+
+
+def _mic_image_id(url: str) -> str | None:
+    """Extract the unique image ID from a MIC CDN URL (last 12 chars of first path segment)."""
+    m = _MIC_CDN_ID.search(url)
+    if m:
+        seg = m.group(1)
+        return seg[-12:] if len(seg) >= 12 else seg
+    return None
+
+
+def _mic_url_priority(url: str) -> int:
+    """Lower = better resolution variant for dedup."""
+    m = _MIC_CDN_ID.search(url)
+    if not m:
+        return 99
+    seg = m.group(1)
+    if seg.startswith("2f0j00") or seg.startswith("202f0"):
+        return 0
+    if seg.startswith("371f3") or seg.startswith("374f3") or seg.startswith("373f3"):
+        return 1
+    if seg.startswith("203f0"):
+        return 2
+    if seg.startswith("3f2j00"):
+        return 3
+    return 10
+
+
+def _dedup_mic_urls(urls: list[str]) -> list[str]:
+    """Deduplicate by image ID keeping the best-resolution variant per image."""
+    by_id: dict[str, str] = {}
+    for u in urls:
+        img_id = _mic_image_id(u)
+        if not img_id:
+            continue
+        if img_id not in by_id or _mic_url_priority(u) < _mic_url_priority(by_id[img_id]):
+            by_id[img_id] = u
+
+    seen_ids: set[str] = set()
+    result: list[str] = []
+    for u in urls:
+        img_id = _mic_image_id(u)
+        if img_id and img_id in by_id and img_id not in seen_ids:
+            result.append(by_id[img_id])
+            seen_ids.add(img_id)
+        elif img_id is None and u not in seen_ids:
+            result.append(u)
+            seen_ids.add(u)
+
+    result.sort(key=_img_quality, reverse=True)
+    return result
+
+
 # Per-domain image extractor dispatch table.
 # Add new site-specific extractors here.
 DOMAIN_IMAGE_EXTRACTORS: dict[str, callable] = {
@@ -821,6 +1115,11 @@ DOMAIN_IMAGE_EXTRACTORS: dict[str, callable] = {
     "amazon.sg": lambda html, page_url: _extract_amazon_color_images_from_script(html),
     "amazon.ae": lambda html, page_url: _extract_amazon_color_images_from_script(html),
     "amazon.sa": lambda html, page_url: _extract_amazon_color_images_from_script(html),
+    "dhgate.com": _extract_dhgate_gallery,
+    "m.dhgate.com": _extract_dhgate_gallery,
+    "www.dhgate.com": _extract_dhgate_gallery,
+    "made-in-china.com": _extract_mic_gallery,
+    "www.made-in-china.com": _extract_mic_gallery,
 }
 
 
@@ -840,7 +1139,9 @@ def _looks_like_product_image(url: str) -> bool:
         return False
     lower = url.lower()
     banned = ("icon", "logo", "avatar", "banner", "spacer", "pixel", "captcha",
-              "sprite", "button", "btn_", "thumb_", "favicon", "loading")
+              "sprite", "button", "btn_", "thumb_", "favicon", "loading",
+              "placeholder", "transparent", "noimg", "no-img", "spacer.gif",
+              "blank.gif", "clear.gif", "pixel.gif")
     if any(b in lower for b in banned):
         return False
     return True

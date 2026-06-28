@@ -13,6 +13,7 @@ from configs.settings import settings
 logger = get_logger(__name__)
 
 PROXY_SOURCES = [
+    "https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&proxy_format=protocolipport&format=text",
     "https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=10000&country=all",
     "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt",
     "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
@@ -29,6 +30,7 @@ TEST_URLS = [
 class ProxyManager:
     def __init__(self) -> None:
         self._pool: list[dict[str, Any]] = []
+        self._failure_counts: dict[str, int] = {}
         self._last_refresh: float = 0.0
         self._refresh_interval: float = settings.proxy_refresh_interval
         self._max_latency: float = settings.proxy_max_latency
@@ -61,13 +63,16 @@ class ProxyManager:
             proxies = []
             for line in resp.text.splitlines():
                 line = line.strip()
-                if not line or ":" not in line:
+                if not line:
                     continue
-                parts = line.split(":")
-                if len(parts) == 2:
-                    ip, port = parts[0].strip(), parts[1].strip()
-                    if ip and port.isdigit():
-                        proxies.append(f"{ip}:{port}")
+                if line.startswith("http://") or line.startswith("https://"):
+                    proxies.append(line)
+                elif ":" in line:
+                    parts = line.split(":")
+                    if len(parts) == 2:
+                        ip, port = parts[0].strip(), parts[1].strip()
+                        if ip and port.isdigit():
+                            proxies.append(f"http://{ip}:{port}")
             return proxies
         except Exception as e:
             logger.warning("proxy_source_failed", url=url, error=str(e))
@@ -125,6 +130,13 @@ class ProxyManager:
             self._last_refresh = now
             logger.info("proxy_pool_refreshed", total=len(self._pool))
 
+    async def mark_proxy_failed(self, proxy_url: str) -> None:
+        self._failure_counts[proxy_url] = self._failure_counts.get(proxy_url, 0) + 1
+        if self._failure_counts[proxy_url] >= 3:
+            self._pool = [p for p in self._pool if p["proxy"] != proxy_url]
+            self._failure_counts.pop(proxy_url, None)
+            logger.info("proxy_removed", proxy=proxy_url, pool_size=len(self._pool))
+
     async def get_proxy(self) -> str | None:
         if not settings.proxy_enabled:
             return None
@@ -136,6 +148,9 @@ class ProxyManager:
         candidates = [p for p in self._pool if time.time() - p["last_used"] > 10.0]
         if not candidates:
             candidates = self._pool
+
+        if not candidates:
+            return None
 
         entry = random.choice(candidates)
         entry["last_used"] = time.time()
