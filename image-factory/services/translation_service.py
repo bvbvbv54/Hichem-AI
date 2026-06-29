@@ -26,6 +26,10 @@ def detect_language(text: str) -> str:
     return "en"
 
 
+def contains_chinese(text: str) -> bool:
+    return bool(_ZH_PATTERN.search(text))
+
+
 def needs_translation(text: str) -> bool:
     return detect_language(text) != "en"
 

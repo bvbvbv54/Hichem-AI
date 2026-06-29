@@ -72,4 +72,9 @@ celery_app.conf.beat_schedule = {
         "schedule": 1800.0,
         "kwargs": {},
     },
+    "recover-stuck": {
+        "task": "tasks.product.recover_stuck",
+        "schedule": 600.0,
+        "kwargs": {},
+    },
 }

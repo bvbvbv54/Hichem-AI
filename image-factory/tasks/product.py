@@ -6,11 +6,11 @@ import json
 import math
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
+import celery.exceptions
 from sqlalchemy import select, update as sql_update
 
 from workers.celery_app import celery_app
@@ -30,14 +30,17 @@ from PIL import Image as PILImage
 logger = get_logger(__name__)
 
 
-@celery_app.task(bind=True, max_retries=1, default_retry_delay=60)
+@celery_app.task(bind=True, max_retries=1, default_retry_delay=60, soft_time_limit=600, time_limit=660, acks_late=True)
 def process_single_product(self, job_id: str, url: str, project_name: str = ""):
     logger.info("processing_single_product", job_id=job_id, url=url)
     try:
         run_async(_execute_product_pipeline(self, job_id, url, project_name))
+    except celery.exceptions.Retry:
+        raise
     except Exception as exc:
         logger.error("product_pipeline_crash", job_id=job_id, error=str(exc))
         run_async(_mark_job_failed(job_id, str(exc)))
+        run_async(_update_product_link_status(url, "error", error_message=f"Task crashed: {str(exc)[:200]}"))
 
 
 @celery_app.task(bind=True, max_retries=1, default_retry_delay=30)
@@ -674,6 +677,49 @@ async def _check_project_completion(project_id: str, project_name: str):
             )
     except Exception as e:
         logger.warning("project_completion_check_failed", project_id=project_id, error=str(e))
+
+
+async def recover_stuck_products(max_age_minutes: int = 30):
+    """Find products stuck in 'scraping' for longer than max_age_minutes and mark them as failed."""
+    try:
+        async with async_session() as session:
+            cutoff = datetime.utcnow() - timedelta(minutes=max_age_minutes)
+            result = await session.execute(
+                select(ProductLink).where(
+                    ProductLink.status == "scraping",
+                    ProductLink.updated_at < cutoff,
+                )
+            )
+            stuck = list(result.scalars().all())
+            if not stuck:
+                logger.info("no_stuck_products_found")
+                return 0
+
+            count = 0
+            for link in stuck:
+                try:
+                    link.status = "error"
+                    link.error_message = f"Auto-recovered: stuck in 'scraping' since {link.updated_at.isoformat()}"
+                    link.failure_type = "timeout"
+                    link.updated_at = datetime.utcnow()
+                    link.completed_at = datetime.utcnow()
+                    session.add(link)
+                    count += 1
+                except Exception as e:
+                    logger.warning("stuck_recovery_failed", product_id=link.id, error=str(e))
+
+            await session.commit()
+            logger.info("stuck_products_recovered", count=count)
+            return count
+    except Exception as e:
+        logger.error("stuck_recovery_error", error=str(e))
+        return 0
+
+
+@celery_app.task(bind=True, max_retries=0)
+def recover_stuck(self):
+    """Celery periodic task to auto-recover stuck products."""
+    run_async(recover_stuck_products())
 
 
 async def _get_product_link_project_id(url: str) -> str:
