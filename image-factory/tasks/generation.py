@@ -193,17 +193,17 @@ async def _mark_job_failed(job_id: str, error: str):
 
 
 @celery_app.task(bind=True, max_retries=3)
-def process_bulk_generation(self, parent_job_id: str, batch_id: str, num_images: int, descriptions: list, prompt_template: str):
+def process_bulk_generation(self, parent_job_id: str, batch_id: str, num_images: int, descriptions: list, prompt_template: str, model_name: str = ""):
     """Process bulk generation from uploaded products."""
-    logger.info("process_bulk_generation_started", parent_job_id=parent_job_id, batch_id=batch_id, num_images=num_images)
+    logger.info("process_bulk_generation_started", parent_job_id=parent_job_id, batch_id=batch_id, num_images=num_images, model_name=model_name)
     try:
-        run_async(_execute_bulk_generation(parent_job_id, batch_id, num_images, descriptions, prompt_template))
+        run_async(_execute_bulk_generation(parent_job_id, batch_id, num_images, descriptions, prompt_template, model_name))
     except Exception as exc:
         logger.error("bulk_generation_failed", error=str(exc), traceback=traceback.format_exc())
         run_async(_mark_job_failed(parent_job_id, str(exc)))
 
 
-async def _execute_bulk_generation(parent_job_id: str, batch_id: str, num_images: int, descriptions: list, prompt_template: str):
+async def _execute_bulk_generation(parent_job_id: str, batch_id: str, num_images: int, descriptions: list, prompt_template: str, model_name: str = ""):
     async with async_session() as session:
         repo = JobRepository(session)
         parent = await repo.get(parent_job_id)
@@ -214,6 +214,10 @@ async def _execute_bulk_generation(parent_job_id: str, batch_id: str, num_images
         parent_meta = parent.meta or {}
         per_product_counts = parent_meta.get("per_product_counts", {})
         is_auto = num_images == -1
+
+        # task-level model_name takes precedence over parent meta
+        if not model_name:
+            model_name = parent_meta.get("model_name", "")
 
         await repo.update_status(parent_job_id, JobStatus.PROCESSING)
         await _publish_job_event(parent_job_id, JobStatus.PROCESSING.value, 0.0, {"batch_id": batch_id})
@@ -233,25 +237,40 @@ async def _execute_bulk_generation(parent_job_id: str, batch_id: str, num_images
         storage = LocalStorage()
         r2 = get_r2_storage()
         from services.nano_banana.client import NanoBananaClient
-        from services.nano_banana.models import GenerationRequest
         image_provider = NanoBananaClient()
+
+        import hashlib
+        from sqlalchemy import select
+        from database.models.product_link import ProductLink
+        from database.models.asset import Asset
 
         completed = 0
         failed = 0
 
         for pidx, product in enumerate(products):
             url = product["url"]
-            safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in url.split("/")[-1][:50])
-            product_dir = batch_dir / safe_name
 
-            scraped_files = list(product_dir.glob("*"))
-            if not scraped_files:
-                logger.warning("no_scraped_images", url=url)
+            # Load approved reference image paths from ProductLink assets
+            ref_paths: list[str] = []
+            url_hash = hashlib.sha256(url.encode()).hexdigest()
+            pl_result = await session.execute(
+                select(ProductLink).where(ProductLink.url_hash == url_hash)
+            )
+            pl = pl_result.scalar_one_or_none()
+            if pl:
+                pl_meta = pl.meta or {}
+                ref_ids = pl_meta.get("reference_selected_ids", [])
+                if ref_ids:
+                    asset_result = await session.execute(
+                        select(Asset).where(Asset.id.in_(ref_ids))
+                    )
+                    for asset in asset_result.scalars().all():
+                        fp = asset.file_path
+                        if Path(fp).exists():
+                            ref_paths.append(fp)
 
             images_for_product = per_product_counts.get(url, num_images) if is_auto else num_images
             images_for_product = max(1, min(images_for_product, 10))
-
-            product_title = product.get("title", "") or product.get("name", "") or url.split("/")[-1].replace("-", " ").replace("_", " ").title()
 
             child_job = await repo.create({
                 "type": "single",
@@ -260,92 +279,71 @@ async def _execute_bulk_generation(parent_job_id: str, batch_id: str, num_images
                 "project_name": parent.project_name or "default",
                 "parent_job_id": parent_job_id,
                 "is_bulk_item": True,
-                "meta": {"url": url, "batch_id": batch_id},
+                "meta": {"url": url, "batch_id": batch_id, "reference_paths": ref_paths},
             })
 
             child_llm_calls: list[dict] = []
 
-            for img_idx in range(images_for_product):
-                if is_auto:
-                    final_prompt = "Generate a professional product image based on this reference photo."
-                else:
-                    description = descriptions[img_idx] if img_idx < len(descriptions) else f"Product image {img_idx + 1}"
+            try:
+                results = await image_provider.generate_from_references(
+                    reference_paths=ref_paths,
+                    num_images=images_for_product,
+                    model_name=model_name,
+                    prompt="",
+                    session=session,
+                )
+                child_llm_calls.append({
+                    "provider": "replicate",
+                    "model": model_name or "google/imagen-4",
+                    "type": "image_generation",
+                    "estimated_cost": 0.008,
+                })
 
-                    if prompt_template:
-                        final_prompt = prompt_template.replace("{description}", description).replace("{url}", url)
-                        for key, val in product.items():
-                            final_prompt = final_prompt.replace("{" + key + "}", val)
-                    else:
-                        final_prompt = f"Professional e-commerce product photograph of {product_title or 'the product'}: {description}. Clean white background, studio lighting, 8K quality, commercial product photography."
-
-                    text_instructions = (
-                        "If the reference image contains any non-English text (e.g. Chinese, Arabic, etc.), "
-                        "translate it into English and render the translated text neatly on the image. "
-                        "Position all text with professional marketing layout — centered, well-spaced, "
-                        "readable fonts, appropriate sizing."
-                    )
-                    final_prompt = f"{final_prompt}\n\n{text_instructions}"
-
-                try:
-                    gen_request = GenerationRequest(
-                        prompt=final_prompt,
-                        num_images=1,
-                        width=1024,
-                        height=1024,
-                        model="google/imagen-4",
-                        extra_params={"aspect_ratio": "1:1", "safety_filter_level": "block_medium_and_above"},
-                    )
-                    results = await image_provider.generate(gen_request)
-                    child_llm_calls.append({
-                        "provider": "replicate",
-                        "model": "google/imagen-4",
-                        "type": "image_generation",
-                        "estimated_cost": 0.008,
-                    })
-
-                    if results:
-                        asset_repo = AssetRepository(session)
-                        for img_data in results:
-                            filename = f"{child_job.id}_{img_idx+1}.png"
-                            storage_result = await storage.store(
-                                data=img_data.image_data,
-                                job_id=child_job.id,
+                if results:
+                    asset_repo = AssetRepository(session)
+                    for img_idx, img_data in enumerate(results):
+                        filename = f"{child_job.id}_{img_idx+1}.png"
+                        storage_result = await storage.store(
+                            data=img_data.image_data,
+                            job_id=child_job.id,
+                            filename=filename,
+                            project_name=parent.project_name or "",
+                        )
+                        asset_meta = {
+                            "reference_paths": ref_paths,
+                            "model": model_name or "",
+                            "provider": "replicate",
+                        }
+                        try:
+                            r2_result = await r2.upload_file(
+                                local_path=storage_result.file_path,
+                                project_id=parent.project_name or "default",
+                                product_id=url.split("/")[-1][:36],
+                                category="ai-generated",
                                 filename=filename,
-                                project_name=parent.project_name or "",
+                                content_type=storage_result.mime_type,
                             )
-                            asset_meta = {"description": description, "prompt": final_prompt, "provider": "replicate"}
-                            try:
-                                r2_result = await r2.upload_file(
-                                    local_path=storage_result.file_path,
-                                    project_id=parent.project_name or "default",
-                                    product_id=url.split("/")[-1][:36],
-                                    category="ai-generated",
-                                    filename=filename,
-                                    content_type=storage_result.mime_type,
-                                )
-                                asset_meta["r2_url"] = r2_result["url"]
-                                asset_meta["r2_key"] = r2_result["key"]
-                            except Exception as r2_err:
-                                logger.warning("r2_bulk_gen_upload_failed", error=str(r2_err))
-                            await asset_repo.create({
-                                "job_id": child_job.id,
-                                "filename": filename,
-                                "original_filename": filename,
-                                "file_path": storage_result.file_path,
-                                "file_size": storage_result.file_size,
-                                "mime_type": storage_result.mime_type,
-                                "width": storage_result.width,
-                                "height": storage_result.height,
-                                "meta": asset_meta,
-                            })
+                            asset_meta["r2_url"] = r2_result["url"]
+                            asset_meta["r2_key"] = r2_result["key"]
+                        except Exception as r2_err:
+                            logger.warning("r2_bulk_gen_upload_failed", error=str(r2_err))
+                        await asset_repo.create({
+                            "job_id": child_job.id,
+                            "filename": filename,
+                            "original_filename": filename,
+                            "file_path": storage_result.file_path,
+                            "file_size": storage_result.file_size,
+                            "mime_type": storage_result.mime_type,
+                            "width": storage_result.width,
+                            "height": storage_result.height,
+                            "meta": asset_meta,
+                        })
+                    completed += images_for_product
 
-                except Exception as e:
-                    logger.error("generation_failed", url=url, error=str(e))
-                    await repo.update_status(child_job.id, JobStatus.FAILED, error_message=str(e))
-                    failed += 1
-                    continue
-
-                completed += 1
+            except Exception as e:
+                logger.error("generation_failed", url=url, error=str(e))
+                await repo.update_status(child_job.id, JobStatus.FAILED, error_message=str(e))
+                failed += 1
 
             if child_llm_calls:
                 child_meta = child_job.meta or {}

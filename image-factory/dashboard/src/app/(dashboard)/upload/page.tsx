@@ -8,9 +8,12 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Label } from "@/components/ui/label";
 import { toast } from "@/hooks/use-toast";
 import {
-  Upload, CheckCircle2, Loader2, AlertTriangle, Ban, Globe, Image, Trash2,
+  Upload, CheckCircle2, Loader2, AlertTriangle, Ban, Globe, Image, Trash2, FolderKanban, Plus, Check,
 } from "lucide-react";
 import { cn, formatDateTime } from "@/lib/utils";
 import type { AcquisitionJob, SubmitUrlsResponse } from "@/types";
@@ -93,8 +96,34 @@ export default function UploadPage() {
   const [submittedJobs, setSubmittedJobs] = useState<SubmitUrlsResponse | null>(null);
   const [isPolling, setIsPolling] = useState(false);
   const [parsing, setParsing] = useState(false);
+  const [selectedProjectId, setSelectedProjectId] = useState("");
+  const [showNewProjectInput, setShowNewProjectInput] = useState(false);
+  const [newProjectName, setNewProjectName] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+
   const queryClient = useQueryClient();
+
+  const { data: projectsData } = useQuery({
+    queryKey: ["projects"],
+    queryFn: () => api.listProjects({ limit: 100 }),
+  });
+  const projects = projectsData?.projects || [];
+
+  const createProjectMutation = useMutation({
+    mutationFn: (name: string) => api.createProject({ name }),
+    onSuccess: (newProject) => {
+      queryClient.invalidateQueries({ queryKey: ["projects"] });
+      setSelectedProjectId(newProject.id);
+      setShowNewProjectInput(false);
+      setNewProjectName("");
+      toast({ title: "Project created", description: `Project "${newProject.name}" created and selected.` });
+    },
+    onError: (err: any) => {
+      toast({ title: "Failed to create project", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const selectedProject = projects.find((p: any) => p.id === selectedProjectId);
 
   const parseUrls = (text: string): string[] => {
     return text
@@ -134,7 +163,7 @@ export default function UploadPage() {
   };
 
   const submitMutation = useMutation({
-    mutationFn: (urls: string[]) => api.submitUrls(urls),
+    mutationFn: (urls: string[]) => api.submitUrls(urls, selectedProjectId, 0, ""),
     onSuccess: (data: SubmitUrlsResponse) => {
       setSubmittedJobs(data);
       setIsPolling(true);
@@ -208,6 +237,69 @@ export default function UploadPage() {
         </p>
       </div>
 
+      {/* Project Selector */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-lg flex items-center gap-2">
+            <FolderKanban className="h-5 w-5" />
+            Project
+          </CardTitle>
+          <CardDescription>
+            Select or create a project to organize scraped products. A project is required before submitting URLs.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {showNewProjectInput ? (
+            <div className="flex items-center gap-2">
+              <Input
+                placeholder="New project name"
+                value={newProjectName}
+                onChange={(e) => setNewProjectName(e.target.value)}
+                className="flex-1"
+                autoFocus
+                disabled={createProjectMutation.isPending}
+              />
+              <Button
+                size="sm"
+                onClick={() => createProjectMutation.mutate(newProjectName)}
+                disabled={!newProjectName.trim() || createProjectMutation.isPending}
+              >
+                {createProjectMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4 mr-1" />}
+                Create
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => { setShowNewProjectInput(false); setNewProjectName(""); }}>
+                Cancel
+              </Button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <Select value={selectedProjectId} onValueChange={setSelectedProjectId}>
+                <SelectTrigger className="flex-1">
+                  <SelectValue placeholder="Select a project..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {projects.map((p: any) => (
+                    <SelectItem key={p.id} value={p.id}>
+                      {p.name} {p.product_count > 0 && `(${p.product_count} products)`}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button variant="outline" size="sm" onClick={() => setShowNewProjectInput(true)}>
+                <Plus className="h-4 w-4 mr-1" /> New
+              </Button>
+            </div>
+          )}
+          {selectedProject && (
+            <p className="text-xs text-muted-foreground mt-2 flex items-center gap-1">
+              <CheckCircle2 className="h-3 w-3 text-emerald-500" />
+              Active project: <strong>{selectedProject.name}</strong>
+              {selectedProject.product_count > 0 && <> &middot; {selectedProject.product_count} products</>}
+            </p>
+          )}
+        </CardContent>
+      </Card>
+
       {/* URL Input */}
       <Card>
         <CardHeader>
@@ -268,8 +360,9 @@ export default function UploadPage() {
               )}
               <Button
                 onClick={handleSubmit}
-                disabled={validCount === 0 || submitMutation.isPending}
+                disabled={!selectedProjectId || validCount === 0 || submitMutation.isPending}
                 size="sm"
+                title={!selectedProjectId ? "Select or create a project first" : ""}
               >
                 {submitMutation.isPending ? (
                   <><Loader2 className="h-4 w-4 mr-1 animate-spin" /> Submitting...</>

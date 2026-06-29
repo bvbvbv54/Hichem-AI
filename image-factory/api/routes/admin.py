@@ -303,6 +303,20 @@ async def update_google_key(
     return {"status": "updated", "key": key[:8] + "..." + key[-4:] if len(key) > 12 else "***"}
 
 
+@router.put("/provider-keys/replicate", summary="Update Replicate API key for FLUX model access (persisted to DB)")
+async def update_replicate_key(
+    body: dict,
+    session: AsyncSession = Depends(get_session),
+):
+    key = body.get("key", "")
+    if not key:
+        raise HTTPException(status_code=400, detail="key is required")
+    if not key.strip().startswith("r8_") and not key.strip().startswith("r8rk_"):
+        raise HTTPException(status_code=400, detail="Invalid Replicate API key format — must start with 'r8_'")
+    await set_provider_api_key("replicate_api_key", key.strip(), session)
+    return {"status": "updated", "key": key[:8] + "..." + key[-4:] if len(key) > 12 else "***"}
+
+
 @router.get("/budget", summary="Get current monthly budget in cents")
 async def get_budget(session: AsyncSession = Depends(get_session)):
     db_val = await get_setting("monthly_budget_cents", session, "")
@@ -385,6 +399,18 @@ async def toggle_storage(
         raise HTTPException(status_code=400, detail="enabled must be a boolean")
     await set_storage_enabled(enabled, session)
     return {"status": "updated", "storage_enabled": enabled}
+
+
+@router.put("/settings/cleanup/toggle", summary="Enable or disable local file auto-cleanup")
+async def toggle_cleanup(
+    body: dict,
+    session: AsyncSession = Depends(get_session),
+):
+    enabled = body.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise HTTPException(status_code=400, detail="enabled must be a boolean")
+    await set_setting("auto_cleanup_local", "true" if enabled else "false", session)
+    return {"status": "updated", "auto_cleanup_local": enabled}
 
 
 async def _resolve_key_status(key: str, ok: bool, remaining: int, redis: aioredis.Redis) -> str:

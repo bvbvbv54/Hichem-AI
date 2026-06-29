@@ -63,7 +63,7 @@ export function statusColor(status: string): string {
 }
 
 export function getProductDetailUrl(productId: string): string {
-  return `/products/${productId}/adapt-ref`;
+  return `/products/${productId}`;
 }
 
 export function statusLabel(status: string): string {

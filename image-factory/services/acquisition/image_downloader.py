@@ -44,7 +44,27 @@ class ImageDownloader:
     async def _get_redis(self) -> redis_async.Redis:
         if self._redis is None:
             self._redis = await redis_async.from_url(settings.redis_url)
+            await self._sync_banned_hashes()
         return self._redis
+
+    async def _sync_banned_hashes(self) -> None:
+        try:
+            import json
+            from database.session import async_session
+            from database.models.setting import Setting
+            from sqlalchemy import select
+            async with async_session() as session:
+                result = await session.execute(
+                    select(Setting).where(Setting.key == "banned_image_hashes")
+                )
+                setting = result.scalar_one_or_none()
+                if setting and setting.value:
+                    hashes = json.loads(setting.value)
+                    if hashes:
+                        await self._redis.sadd(GLOBAL_REJECTED_HASHES_SET, *hashes)
+                        logger.info("synced_banned_hashes_to_redis", count=len(hashes))
+        except Exception as e:
+            logger.warning("failed_to_sync_banned_hashes", error=str(e))
 
     async def download(self, url: str, job_id: str) -> tuple[str | None, str | None]:
         try:

@@ -46,3 +46,4 @@ class ProductDetailResponse(BaseModel):
     scraped_images: list[dict[str, Any]] = Field(default_factory=list)
     generated_images: list[dict[str, Any]] = Field(default_factory=list)
     jobs: list[dict[str, Any]] = Field(default_factory=list)
+    reference_status: dict[str, Any] = Field(default_factory=dict)

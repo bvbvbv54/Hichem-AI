@@ -13,6 +13,7 @@ celery_app = Celery(
         "tasks.delivery",
         "tasks.product",
         "tasks.intelligence",
+        "tasks.cleanup",
     ],
 )
 
@@ -64,6 +65,11 @@ celery_app.conf.beat_schedule = {
     "opportunity-report": {
         "task": "tasks.intelligence.generate_marketplace_opportunity_report",
         "schedule": 86400.0,
+        "kwargs": {},
+    },
+    "local-cleanup": {
+        "task": "tasks.cleanup.run_local_cleanup",
+        "schedule": 1800.0,
         "kwargs": {},
     },
 }

@@ -44,6 +44,7 @@ class SubmitGenerationRequest(BaseModel):
     num_images_per_product: int
     image_descriptions: list[str]
     prompt_template: str = ""
+    model_name: str = ""
     skip_credit_check: bool = False
 
 
@@ -535,6 +536,21 @@ async def start_generation(
     if not products_file.exists():
         raise HTTPException(status_code=400, detail="Products data not found.")
 
+    # Read stored generation config from Redis if set at upload time
+    if not req.model_name:
+        try:
+            from redis import Redis as SyncRedis
+            r = SyncRedis.from_url(settings.redis_url)
+            stored = r.get(f"batch:{req.batch_id}:gen_config")
+            if stored:
+                gen_config = json.loads(stored)
+                req.model_name = gen_config.get("model_name", "")
+                if gen_config.get("num_images_per_product", 0) > 0 and req.num_images_per_product == -1:
+                    req.num_images_per_product = gen_config["num_images_per_product"]
+            r.close()
+        except Exception:
+            pass
+
     if not req.skip_credit_check:
         balancer = get_credit_balancer()
         products = json.loads(products_file.read_text())
@@ -611,6 +627,7 @@ async def start_generation(
             "num_images": req.num_images_per_product,
             "descriptions": req.image_descriptions,
             "prompt_template": req.prompt_template,
+            "model_name": req.model_name,
             "per_product_counts": per_product_counts,
         },
     })
@@ -626,6 +643,7 @@ async def start_generation(
         req.num_images_per_product,
         req.image_descriptions,
         req.prompt_template,
+        req.model_name,
     ])
 
     logger.info("generation_started", batch_id=req.batch_id, job_id=batch_job.id, num_images=req.num_images_per_product)

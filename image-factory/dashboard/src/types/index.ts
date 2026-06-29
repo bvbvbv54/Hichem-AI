@@ -195,6 +195,8 @@ export interface Notification {
   data?: {
     product_id?: string;
     product_name?: string;
+    project_name?: string;
+    batch_id?: string;
     url?: string;
     job_id?: string;
     failure_type?: string;

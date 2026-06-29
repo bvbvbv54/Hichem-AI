@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
 import time
@@ -12,7 +13,7 @@ from services.acquisition.http_client import HardenedHTTPClient
 from services.acquisition.detector import AntiBotDetector
 from services.acquisition.rate_limiter import DomainRateLimiter
 from services.acquisition.robots_checker import RobotsChecker
-from services.acquisition.image_extractor import extract_image_urls, extract_page_title, extract_page_description, extract_images_for_domain, validate_product_page
+from services.acquisition.image_extractor import extract_image_urls, extract_page_title, extract_page_description, extract_images_for_domain, is_plausible_product_page
 from services.acquisition.image_downloader import ImageDownloader
 from services.acquisition.cache import ImageCache
 from services.acquisition.monitor import AcquisitionMonitor
@@ -24,10 +25,13 @@ from services.admin_notifier import get_notifier
 
 logger = get_logger(__name__)
 
-_CN_PRIMARY_DOMAINS = {"1688.com", "taobao.com", "tmall.com", "detail.1688.com", "alibaba.com", "aliexpress.com"}
-_VALIDATE_PAGE_DOMAINS = {"alibaba.com", "www.alibaba.com"}
+_CN_PRIMARY_DOMAINS = {"1688.com", "taobao.com", "tmall.com", "detail.1688.com", "alibaba.com"}
 _AMAZON_DOMAINS = {"amazon.com", "amazon.co.uk", "amazon.de", "amazon.fr", "amazon.it", "amazon.es", "amazon.ca", "amazon.in", "amazon.com.au", "amazon.com.br", "amazon.com.mx", "amazon.nl", "amazon.pl", "amazon.se", "amazon.sg", "amazon.ae", "amazon.sa"}
 BANNED_DOMAINS = {"jd.com", "taobao.com", "temu.com"}
+
+# Prompt 12: 3-try extraction rule — retry up to 3 times for retryable failures
+MAX_EXTRACTION_ATTEMPTS = 3
+EXTRACTION_BACKOFF_SECS = [5, 15]  # seconds after attempt 1 and attempt 2
 
 _CAPTCHA_TITLES = {
     "验证码拦截", "just a moment", "please wait", "attention required",
@@ -137,12 +141,11 @@ class AcquisitionPipeline:
 
         logger.info("pipeline_start", job_id=job.job_id, url=job.url)
 
+        # ---- static checks (non-retryable) ----
         if any(d in domain for d in BANNED_DOMAINS):
             logger.info("domain_banned_skipped", job_id=job.job_id, url=job.url, domain=domain)
             return AcquisitionResult(
-                job_id=job.job_id,
-                url=job.url,
-                success=False,
+                job_id=job.job_id, url=job.url, success=False,
                 failure_type=FailureType.DOMAIN_BANNED,
                 failure_detail=f"{domain} is not supported — this domain has been permanently banned (login wall / CAPTCHA / no anonymous access). No network call was made.",
                 duration_ms=0,
@@ -150,9 +153,7 @@ class AcquisitionPipeline:
 
         if await self.queue.is_restricted(domain):
             return AcquisitionResult(
-                job_id=job.job_id,
-                url=job.url,
-                success=False,
+                job_id=job.job_id, url=job.url, success=False,
                 failure_type=FailureType.BOT_BLOCKED,
                 failure_detail="Domain is restricted due to repeated blocks",
                 duration_ms=0,
@@ -164,15 +165,11 @@ class AcquisitionPipeline:
                 code=ErrorCode.ACQ_ROBOTS_DISALLOWED,
                 severity=ErrorSeverity.INFO,
                 message=f"robots.txt disallows scraping: {job.url} — product skipped.",
-                job_id=job.job_id,
-                stage="acquisition",
-                product_url=job.url,
+                job_id=job.job_id, stage="acquisition", product_url=job.url,
                 retryable=False,
             ))
             result = AcquisitionResult(
-                job_id=job.job_id,
-                url=job.url,
-                success=False,
+                job_id=job.job_id, url=job.url, success=False,
                 failure_type=failure,
                 failure_detail="Disallowed by robots.txt",
                 duration_ms=(time.monotonic() - start) * 1000,
@@ -186,151 +183,177 @@ class AcquisitionPipeline:
                 self.rate_limiter._local_buckets[domain]._rate, 1.0 / crawl_delay
             )
 
-        await self.rate_limiter.acquire(domain)
+        # ---- 3-try extraction loop (Prompt 12) ----
+        page_title = ""
+        page_description = ""
+        image_urls: list[str] = []
+        used_browser = False
 
-        html, used_browser, api_images, failure_type, failure_detail = await self._fetch_page(job.url)
+        for attempt in range(1, MAX_EXTRACTION_ATTEMPTS + 1):
+            if attempt > 1:
+                backoff = EXTRACTION_BACKOFF_SECS[attempt - 2]
+                logger.info("pipeline_retrying_extraction", job_id=job.job_id, url=job.url,
+                           attempt=attempt, max_attempts=MAX_EXTRACTION_ATTEMPTS, backoff_s=backoff)
+                await asyncio.sleep(backoff)
 
-        if failure_type and failure_detail:
-            if failure_type in (FailureType.BOT_BLOCKED, FailureType.CAPTCHA):
-                self._consecutive_blocks[domain] = self._consecutive_blocks.get(domain, 0) + 1
-                if self._consecutive_blocks[domain] >= 3:
-                    await self.queue.mark_restricted(domain)
+            await self.rate_limiter.acquire(domain)
 
-            code_map = {
-                FailureType.CAPTCHA: ErrorCode.ACQ_CAPTCHA,
-                FailureType.BOT_BLOCKED: ErrorCode.ACQ_BOT_BLOCKED,
-                FailureType.RATE_LIMITED: ErrorCode.ACQ_RATE_LIMITED,
-                FailureType.TIMEOUT: ErrorCode.ACQ_TIMEOUT,
-                FailureType.DOMAIN_BANNED: ErrorCode.ACQ_BOT_BLOCKED,
-            }
-            code = code_map.get(failure_type, ErrorCode.ACQ_NETWORK_ERROR)
-            severity = ErrorSeverity.WARNING if failure_type in (FailureType.CAPTCHA, FailureType.BOT_BLOCKED) else ErrorSeverity.INFO
-            msg = {
-                FailureType.CAPTCHA: f"CAPTCHA encountered on {job.url} — automated access blocked. Manual download required.",
-                FailureType.BOT_BLOCKED: f"Bot detection triggered on {job.url} — domain marked restricted for 1 hour.",
-                FailureType.RATE_LIMITED: f"Rate limited by {job.url} — backoff applied.",
-            }.get(failure_type, f"Acquisition failed: {failure_detail}")
+            html, used_browser, api_images, failure_type, failure_detail = await self._fetch_page(job.url)
 
-            await notifier.notify(PipelineError(
-                code=code,
-                severity=severity,
-                message=msg,
-                job_id=job.job_id,
-                stage="acquisition",
-                product_url=job.url,
-                retryable=failure_type == FailureType.RATE_LIMITED,
-            ))
+            if failure_type and failure_detail:
+                if failure_type in (FailureType.BOT_BLOCKED, FailureType.CAPTCHA):
+                    self._consecutive_blocks[domain] = self._consecutive_blocks.get(domain, 0) + 1
+                    if self._consecutive_blocks[domain] >= 3:
+                        await self.queue.mark_restricted(domain)
 
-            result = AcquisitionResult(
-                job_id=job.job_id,
-                url=job.url,
-                success=False,
-                failure_type=failure_type,
-                failure_detail=failure_detail,
-                required_browser=used_browser,
-                duration_ms=(time.monotonic() - start) * 1000,
-            )
-            await self.monitor.record(result)
-            return result
+                code_map = {
+                    FailureType.CAPTCHA: ErrorCode.ACQ_CAPTCHA,
+                    FailureType.BOT_BLOCKED: ErrorCode.ACQ_BOT_BLOCKED,
+                    FailureType.RATE_LIMITED: ErrorCode.ACQ_RATE_LIMITED,
+                    FailureType.TIMEOUT: ErrorCode.ACQ_TIMEOUT,
+                    FailureType.DOMAIN_BANNED: ErrorCode.ACQ_BOT_BLOCKED,
+                }
+                code = code_map.get(failure_type, ErrorCode.ACQ_NETWORK_ERROR)
+                severity = ErrorSeverity.WARNING if failure_type in (FailureType.CAPTCHA, FailureType.BOT_BLOCKED) else ErrorSeverity.INFO
+                msg = {
+                    FailureType.CAPTCHA: f"CAPTCHA encountered on {job.url} — automated access blocked. Manual download required.",
+                    FailureType.BOT_BLOCKED: f"Bot detection triggered on {job.url} — domain marked restricted for 1 hour.",
+                    FailureType.RATE_LIMITED: f"Rate limited by {job.url} — backoff applied.",
+                }.get(failure_type, f"Acquisition failed: {failure_detail}")
 
-        if not html:
-            result = AcquisitionResult(
-                job_id=job.job_id,
-                url=job.url,
-                success=False,
-                failure_type=FailureType.PAGE_STRUCTURE_CHANGED,
-                failure_detail="No HTML content retrieved",
-                duration_ms=(time.monotonic() - start) * 1000,
-            )
-            await self.monitor.record(result)
-            return result
+                await notifier.notify(PipelineError(
+                    code=code, severity=severity, message=msg,
+                    job_id=job.job_id, stage="acquisition", product_url=job.url,
+                    retryable=failure_type == FailureType.RATE_LIMITED,
+                ))
 
-        self._consecutive_blocks[domain] = 0
+                if attempt == MAX_EXTRACTION_ATTEMPTS:
+                    result = AcquisitionResult(
+                        job_id=job.job_id, url=job.url, success=False,
+                        failure_type=failure_type, failure_detail=failure_detail,
+                        required_browser=used_browser,
+                        duration_ms=(time.monotonic() - start) * 1000,
+                    )
+                    await self.monitor.record(result)
+                    return result
+                continue
 
-        page_title = extract_page_title(html)
-        page_description = extract_page_description(html)
+            if not html:
+                if attempt == MAX_EXTRACTION_ATTEMPTS:
+                    result = AcquisitionResult(
+                        job_id=job.job_id, url=job.url, success=False,
+                        failure_type=FailureType.PAGE_STRUCTURE_CHANGED,
+                        failure_detail="No HTML content retrieved",
+                        duration_ms=(time.monotonic() - start) * 1000,
+                    )
+                    await self.monitor.record(result)
+                    return result
+                continue
 
-        # Validate page is not a CAPTCHA/bot page
-        if _is_captcha_page(page_title, html):
-            logger.warning("captcha_page_detected", job_id=job.job_id, url=job.url, title=page_title)
-            result = AcquisitionResult(
-                job_id=job.job_id,
-                url=job.url,
-                success=False,
-                failure_type=FailureType.CAPTCHA,
-                failure_detail=f"CAPTCHA page detected: {page_title}",
-                required_browser=used_browser,
-                duration_ms=(time.monotonic() - start) * 1000,
-            )
-            await self.monitor.record(result)
-            await self.queue.mark_restricted(domain)
-            return result
+            self._consecutive_blocks[domain] = 0
 
-        image_urls = extract_images_for_domain(html, job.url, domain)
-        image_urls = [_normalize_image_url(u) for u in image_urls]
-        image_urls = list(dict.fromkeys(image_urls))
-        if api_images:
-            normalized_api = [_normalize_image_url(u) for u in api_images]
-            for u in normalized_api:
-                if u not in image_urls:
-                    image_urls.append(u)
-        image_urls = image_urls[:job.max_images]
+            page_title = extract_page_title(html)
+            page_description = extract_page_description(html)
 
-        if not image_urls:
-            if settings.scrapfly_enabled:
-                logger.info("falling_back_to_scrapfly", url=job.url)
-                sf_html = await self.scrapfly.fetch_page(
-                    job.url, render_js=True,
-                    country="cn" if is_cn_domain else ("us" if is_amazon_domain else None),
-                )
-                if sf_html and not _is_captcha_page(extract_page_title(sf_html), sf_html):
-                    sf_valid = True
-                    if domain in _VALIDATE_PAGE_DOMAINS:
-                        sf_valid, reason = validate_product_page(job.url, sf_html)
+            # CAPTCHA / bot-page check
+            if _is_captcha_page(page_title, html):
+                logger.warning("captcha_page_detected", job_id=job.job_id, url=job.url, title=page_title)
+                await self.queue.mark_restricted(domain)
+                if attempt == MAX_EXTRACTION_ATTEMPTS:
+                    result = AcquisitionResult(
+                        job_id=job.job_id, url=job.url, success=False,
+                        failure_type=FailureType.CAPTCHA,
+                        failure_detail=f"CAPTCHA page detected: {page_title}",
+                        required_browser=used_browser,
+                        duration_ms=(time.monotonic() - start) * 1000,
+                    )
+                    await self.monitor.record(result)
+                    return result
+                continue
+
+            # Plausibility check — applied to ALL domains, not just Alibaba (Prompt 12)
+            is_valid, reason = is_plausible_product_page(html, job.url)
+            if not is_valid:
+                logger.warning("page_plausibility_failed", job_id=job.job_id, url=job.url, reason=reason)
+                if attempt == MAX_EXTRACTION_ATTEMPTS:
+                    result = AcquisitionResult(
+                        job_id=job.job_id, url=job.url, success=False,
+                        failure_type=FailureType.PAGE_STRUCTURE_CHANGED,
+                        failure_detail=reason,
+                        duration_ms=(time.monotonic() - start) * 1000,
+                    )
+                    await self.monitor.record(result)
+                    return result
+                continue
+
+            image_urls = extract_images_for_domain(html, job.url, domain)
+            image_urls = [_normalize_image_url(u) for u in image_urls]
+            image_urls = list(dict.fromkeys(image_urls))
+            if api_images:
+                normalized_api = [_normalize_image_url(u) for u in api_images]
+                for u in normalized_api:
+                    if u not in image_urls:
+                        image_urls.append(u)
+            image_urls = image_urls[:job.max_images]
+
+            # Fallback: Scrapfly re-fetch when extractor returns nothing
+            if not image_urls:
+                if settings.scrapfly_enabled:
+                    logger.info("falling_back_to_scrapfly", url=job.url)
+                    sf_html = await self.scrapfly.fetch_page(
+                        job.url, render_js=True,
+                        country="cn" if is_cn_domain else ("us" if is_amazon_domain else None),
+                    )
+                    if sf_html and not _is_captcha_page(extract_page_title(sf_html), sf_html):
+                        sf_valid, reason = is_plausible_product_page(sf_html, job.url)
                         if not sf_valid:
-                            logger.warning("fallback_scrapfly_validation_failed", reason=reason)
-                    if sf_valid:
-                        sf_urls = extract_images_for_domain(sf_html, job.url, domain)
-                        image_urls = [_normalize_image_url(u) for u in sf_urls]
-                        page_title = extract_page_title(sf_html) or page_title
-                        page_description = extract_page_description(sf_html) or page_description
-                        image_urls = image_urls[:job.max_images]
+                            logger.warning("fallback_scrapfly_plausibility_failed", reason=reason)
+                        else:
+                            sf_urls = extract_images_for_domain(sf_html, job.url, domain)
+                            image_urls = [_normalize_image_url(u) for u in sf_urls]
+                            page_title = extract_page_title(sf_html) or page_title
+                            page_description = extract_page_description(sf_html) or page_description
+                            image_urls = image_urls[:job.max_images]
 
-        if not image_urls and not used_browser and settings.use_browser_fallback:
-            logger.info("falling_back_to_browser", url=job.url)
-            browser_html, api_images = await self.browser.fetch_page_with_api(job.url)
-            if browser_html and not _is_captcha_page(extract_page_title(browser_html), browser_html):
-                b_valid = True
-                if domain in _VALIDATE_PAGE_DOMAINS:
-                    b_valid, reason = validate_product_page(job.url, browser_html)
+            # Fallback: browser re-fetch when extractor returns nothing
+            if not image_urls and not used_browser and settings.use_browser_fallback:
+                logger.info("falling_back_to_browser", url=job.url)
+                browser_html, api_images = await self.browser.fetch_page_with_api(job.url)
+                browser_urls: list[str] = []
+                if browser_html and not _is_captcha_page(extract_page_title(browser_html), browser_html):
+                    b_valid, reason = is_plausible_product_page(browser_html, job.url)
                     if not b_valid:
-                        logger.warning("fallback_browser_validation_failed", reason=reason)
-                if b_valid:
-                    browser_urls = extract_images_for_domain(browser_html, job.url, domain)
-                browser_urls = [_normalize_image_url(u) for u in browser_urls]
-                browser_urls = list(dict.fromkeys(browser_urls))
-                if api_images:
-                    normalized_api = [_normalize_image_url(u) for u in api_images]
-                    browser_urls.extend(normalized_api)
+                        logger.warning("fallback_browser_plausibility_failed", reason=reason)
+                    else:
+                        browser_urls = extract_images_for_domain(browser_html, job.url, domain)
+                    browser_urls = [_normalize_image_url(u) for u in browser_urls]
                     browser_urls = list(dict.fromkeys(browser_urls))
-                if browser_urls:
-                    image_urls = browser_urls[:job.max_images]
-                    used_browser = True
-                    page_title = extract_page_title(browser_html) or page_title
-                    page_description = extract_page_description(browser_html) or page_description
+                    if api_images:
+                        normalized_api = [_normalize_image_url(u) for u in api_images]
+                        browser_urls.extend(normalized_api)
+                        browser_urls = list(dict.fromkeys(browser_urls))
+                    if browser_urls:
+                        image_urls = browser_urls[:job.max_images]
+                        used_browser = True
+                        page_title = extract_page_title(browser_html) or page_title
+                        page_description = extract_page_description(browser_html) or page_description
 
-        if not image_urls:
-            result = AcquisitionResult(
-                job_id=job.job_id,
-                url=job.url,
-                success=False,
-                failure_type=FailureType.PAGE_STRUCTURE_CHANGED,
-                failure_detail="No image URLs found in page",
-                duration_ms=(time.monotonic() - start) * 1000,
-            )
-            await self.monitor.record(result)
-            return result
+            if not image_urls:
+                logger.warning("no_image_urls_extracted", job_id=job.job_id, url=job.url, attempt=attempt)
+                if attempt == MAX_EXTRACTION_ATTEMPTS:
+                    result = AcquisitionResult(
+                        job_id=job.job_id, url=job.url, success=False,
+                        failure_type=FailureType.PAGE_STRUCTURE_CHANGED,
+                        failure_detail="No image URLs found in page after 3 extraction attempts",
+                        duration_ms=(time.monotonic() - start) * 1000,
+                    )
+                    await self.monitor.record(result)
+                    return result
+                continue
 
+            break  # success — images found, exit retry loop
+
+        # ---- download images (reached only on success) ----
         image_paths: list[str] = []
         image_hashes: list[str] = []
         seen_paths: set[str] = set()
@@ -402,36 +425,27 @@ class AcquisitionPipeline:
             if html:
                 title = extract_page_title(html)
                 if not _is_captcha_page(title, html):
-                    if domain in _VALIDATE_PAGE_DOMAINS:
-                        is_valid, reason = validate_product_page(url, html)
-                        if is_valid:
-                            image_urls = extract_images_for_domain(html, url, domain)
-                            if image_urls:
-                                return html, False, [], None, None
-                        logger.warning("page_validation_failed", url=url, reason=reason)
-                    else:
+                    is_valid, reason = is_plausible_product_page(html, url)
+                    if is_valid:
                         image_urls = extract_images_for_domain(html, url, domain)
                         if image_urls:
                             return html, False, [], None, None
-                logger.warning("scrapfly_primary_captcha", url=url, title=title)
-            # If Scrapfly returned CAPTCHA, fall through to browser for CN domains
+                    logger.warning("scrapfly_cn_plausibility_failed", url=url, reason=reason)
+                else:
+                    logger.warning("scrapfly_cn_captcha", url=url, title=title)
             logger.info("scrapfly_cn_fallback_browser", url=url)
             html, api_images = await self.browser.fetch_page_with_api(url)
             if html:
                 title = extract_page_title(html)
-                if not _is_captcha_page(title, html):
-                    if domain in _VALIDATE_PAGE_DOMAINS:
-                        is_valid, reason = validate_product_page(url, html)
-                        if is_valid:
-                            image_urls = extract_images_for_domain(html, url, domain)
-                            if image_urls:
-                                return html, True, api_images, None, None
-                        logger.warning("page_validation_failed", url=url, reason=reason)
-                    else:
+                if _is_captcha_page(title, html):
+                    logger.warning("browser_cn_captcha", url=url, title=title)
+                else:
+                    is_valid, reason = is_plausible_product_page(html, url)
+                    if is_valid:
                         image_urls = extract_images_for_domain(html, url, domain)
                         if image_urls:
                             return html, True, api_images, None, None
-                logger.warning("browser_cn_captcha", url=url, title=title)
+                    logger.warning("browser_cn_plausibility_failed", url=url, reason=reason)
 
         # For Amazon, use Scrapfly with country=us as primary
         is_amazon_domain = any(d in domain for d in _AMAZON_DOMAINS)
@@ -440,22 +454,26 @@ class AcquisitionPipeline:
             html = await self.scrapfly.fetch_page(url, render_js=True, country="us")
             if html:
                 title = extract_page_title(html)
-                if not _is_captcha_page(title, html):
+                if _is_captcha_page(title, html):
+                    logger.warning("scrapfly_amazon_captcha", url=url, title=title)
+                else:
                     amz_urls = extract_images_for_domain(html, url, domain)
                     if amz_urls:
                         logger.info("scrapfly_amazon_success", url=url, images=len(amz_urls))
                         return html, False, [], None, None
-                logger.warning("scrapfly_amazon_captcha", url=url, title=title)
+                    logger.warning("scrapfly_amazon_no_images", url=url)
             # Fallback: browser for Amazon
             logger.info("fallback_browser_amazon", url=url)
             html, api_images = await self.browser.fetch_page_with_api(url)
             if html:
                 title = extract_page_title(html)
-                if not _is_captcha_page(title, html):
+                if _is_captcha_page(title, html):
+                    logger.warning("browser_amazon_captcha", url=url, title=title)
+                else:
                     amz_urls = extract_images_for_domain(html, url, domain)
                     if amz_urls:
                         return html, True, api_images, None, None
-                logger.warning("browser_amazon_captcha", url=url, title=title)
+                    logger.warning("browser_amazon_no_images", url=url)
 
         if settings.use_browser_primary:
             logger.info("browser_primary", url=url)
@@ -477,7 +495,9 @@ class AcquisitionPipeline:
                     retry_after = response.headers.get("Retry-After")
                     if retry_after:
                         await self.rate_limiter.block_domain(domain, float(retry_after))
-                return None, False, [], failure, f"Detected: {failure.value}"
+                if failure != FailureType.CAPTCHA:
+                    return None, False, [], failure, f"Detected: {failure.value}"
+                logger.warning("http_captcha_continuing_fallback", url=url)
             if not is_cn_domain:
                 html = response.text
                 image_urls = extract_images_for_domain(html, url, domain)

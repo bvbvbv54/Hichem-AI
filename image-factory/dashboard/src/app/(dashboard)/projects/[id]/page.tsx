@@ -10,7 +10,7 @@ import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ArrowLeft, ExternalLink, Image, FileText, Clock, CheckCircle2, XCircle, Loader2 } from "lucide-react";
+import { ArrowLeft, ExternalLink, Image, FileText, Clock, CheckCircle2, XCircle, Loader2, Sparkles, Wand2 } from "lucide-react";
 import { formatDate, formatDateTime, statusLabel, statusColor } from "@/lib/utils";
 
 export default function ProjectDetailPage() {
@@ -99,7 +99,7 @@ export default function ProjectDetailPage() {
       <Tabs defaultValue="all">
         <TabsList>
           <TabsTrigger value="all">All ({products.length})</TabsTrigger>
-          <TabsTrigger value="completed">Completed ({completed})</TabsTrigger>
+          <TabsTrigger value="review">Review &amp; Generate ({products.filter((p: any) => p.status === "completed").length})</TabsTrigger>
           <TabsTrigger value="processing">Processing ({processing})</TabsTrigger>
           <TabsTrigger value="failed">Failed ({failed})</TabsTrigger>
         </TabsList>
@@ -135,6 +135,34 @@ export default function ProjectDetailPage() {
               ))
             )}
           </div>
+        </TabsContent>
+
+        <TabsContent value="review" className="mt-4">
+          {products.filter((p: any) => p.status === "completed").length === 0 ? (
+            <Card><CardContent className="py-12 text-center text-muted-foreground">No products ready for review. Products must finish scraping first.</CardContent></Card>
+          ) : (
+            <div className="space-y-4">
+              {products.filter((p: any) => p.status === "completed").map((product: any) => (
+                <Card key={product.id}>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm font-medium truncate">{product.generated_title || product.url}</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2">
+                      {(product.main_image_url ? [{ url: product.main_image_url }] : []).concat(product.scraped_images || []).map((img: any, idx: number) => (
+                        <img
+                          key={idx}
+                          src={img.thumbnail_url || img.url || `/api/v1/assets/${img.id}/file`}
+                          alt=""
+                          className="aspect-square rounded-md object-cover border bg-muted"
+                        />
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          )}
         </TabsContent>
 
         <TabsContent value="completed">

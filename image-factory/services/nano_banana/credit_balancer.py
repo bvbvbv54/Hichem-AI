@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import select, func, and_
+from sqlalchemy import select, func, and_, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from configs.settings import settings
@@ -95,7 +95,11 @@ class NanoBananaCreditBalancer:
             month_end = month_start.replace(month=month_start.month + 1)
         result = await session.execute(
             select(func.count(Asset.id)).where(
-                and_(Asset.created_at >= month_start, Asset.created_at < month_end)
+                and_(
+                    Asset.created_at >= month_start,
+                    Asset.created_at < month_end,
+                    text("meta->>'provider' = 'replicate'"),
+                )
             )
         )
         total_images = result.scalar() or 0

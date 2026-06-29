@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import hashlib
+import json
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+from sqlalchemy import select, desc, func, text as sqlalchemy_text
 from sqlalchemy.ext.asyncio import AsyncSession
 from pathlib import Path
 
@@ -9,14 +15,68 @@ from database.session import get_session
 from database.models.asset import Asset
 from database.models.product_link import ProductLink
 from database.models.job import Job
-from sqlalchemy import select, desc, func
+from database.models.setting import Setting
 from configs.settings import settings
 from configs.logging import get_logger
-import hashlib
 
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/assets", tags=["Assets"])
+
+BANNED_HASHES_SETTING_KEY = "banned_image_hashes"
+
+class BanImageRequest(BaseModel):
+    asset_id: str
+    hash: str = ""
+    filename: str = ""
+
+async def _get_banned_hashes(session) -> set[str]:
+    result = await session.execute(
+        select(Setting).where(Setting.key == BANNED_HASHES_SETTING_KEY)
+    )
+    setting = result.scalar_one_or_none()
+    if setting and setting.value:
+        return set(json.loads(setting.value))
+    return set()
+
+async def _add_banned_hash(session, hash_str: str) -> None:
+    hashes = await _get_banned_hashes(session)
+    hashes.add(hash_str)
+    await session.execute(
+        sqlalchemy_text(
+            "INSERT INTO settings (key, value, updated_at) VALUES (:key, :value, :now) "
+            "ON CONFLICT (key) DO UPDATE SET value = :value, updated_at = :now"
+        ),
+        {"key": BANNED_HASHES_SETTING_KEY, "value": json.dumps(list(hashes)), "now": datetime.utcnow()},
+    )
+    await session.commit()
+    # Also update Redis
+    try:
+        import redis.asyncio as aioredis
+        r = await aioredis.from_url(settings.redis_url, socket_connect_timeout=3)
+        await r.sadd("global_rejected_hashes", hash_str)
+        await r.aclose()
+    except Exception:
+        pass
+
+async def _remove_banned_hash(session, hash_str: str) -> None:
+    hashes = await _get_banned_hashes(session)
+    hashes.discard(hash_str)
+    await session.execute(
+        sqlalchemy_text(
+            "INSERT INTO settings (key, value, updated_at) VALUES (:key, :value, :now) "
+            "ON CONFLICT (key) DO UPDATE SET value = :value, updated_at = :now"
+        ),
+        {"key": BANNED_HASHES_SETTING_KEY, "value": json.dumps(list(hashes)), "now": datetime.utcnow()},
+    )
+    await session.commit()
+    try:
+        import redis.asyncio as aioredis
+        r = await aioredis.from_url(settings.redis_url, socket_connect_timeout=3)
+        await r.srem("global_rejected_hashes", hash_str)
+        await r.aclose()
+    except Exception:
+        pass
 
 
 @router.get("")
@@ -110,3 +170,35 @@ async def download_asset(
         media_type=asset.mime_type or "image/png",
         filename=asset.filename,
     )
+
+
+@router.get("/banned-hashes")
+async def list_banned_hashes(
+    session: AsyncSession = Depends(get_session),
+):
+    hashes = await _get_banned_hashes(session)
+    return {"hashes": list(hashes)}
+
+
+@router.post("/ban")
+async def ban_image_hash(
+    req: BanImageRequest,
+    session: AsyncSession = Depends(get_session),
+):
+    if not req.hash:
+        raise HTTPException(status_code=400, detail="hash is required")
+    await _add_banned_hash(session, req.hash)
+    logger.info("image_hash_banned", hash=req.hash, asset_id=req.asset_id, filename=req.filename)
+    return {"status": "banned", "hash": req.hash}
+
+
+@router.post("/unban")
+async def unban_image_hash(
+    req: BanImageRequest,
+    session: AsyncSession = Depends(get_session),
+):
+    if not req.hash:
+        raise HTTPException(status_code=400, detail="hash is required")
+    await _remove_banned_hash(session, req.hash)
+    logger.info("image_hash_unbanned", hash=req.hash, asset_id=req.asset_id)
+    return {"status": "unbanned", "hash": req.hash}

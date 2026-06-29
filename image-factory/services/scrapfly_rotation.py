@@ -539,9 +539,12 @@ class RecoveryScheduler:
                         try:
                             rd = datetime.strptime(reset_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
                             if datetime.now(timezone.utc) >= rd:
-                                healthy = await self.health_check_key(
-                                    next((k for k in keys if k[:20] == state.key), f"scp-live-{state.key}")
-                                )
+                                matching = [k for k in keys if k[:20] == state.key]
+                                if matching:
+                                    healthy = await self.health_check_key(matching[0])
+                                else:
+                                    logger.warning("health_check_no_matching_key", key_short=state.key)
+                                    healthy = False
                                 if healthy:
                                     remaining = state.estimated_credits_remaining
                                     if remaining > MIN_RESTORE_THRESHOLD:

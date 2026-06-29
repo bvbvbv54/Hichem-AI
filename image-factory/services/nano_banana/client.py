@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import io
 import json
+import os
 import time
 import uuid
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any, Optional
 
 import httpx
@@ -35,18 +38,31 @@ class ReplicateProvider(BaseImageProvider):
     def __init__(self) -> None:
         self.api_key = settings.replicate_api_key
         self.poll_interval = settings.image_provider_poll_interval
-        self.client = httpx.AsyncClient(
-            base_url="https://api.replicate.com/v1",
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            timeout=60.0,
-        )
+        self._client: httpx.AsyncClient | None = None
         self.default_model = "google/imagen-4"
 
+    async def _ensure_client(self) -> httpx.AsyncClient:
+        if self._client is None:
+            self._client = httpx.AsyncClient(
+                base_url="https://api.replicate.com/v1",
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                timeout=60.0,
+            )
+        return self._client
+
+    async def configure_key(self, api_key: str) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+        self.api_key = api_key
+
     async def close(self) -> None:
-        await self.client.aclose()
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
 
     @retry(
         stop=stop_after_attempt(settings.image_provider_max_retries),
@@ -54,6 +70,7 @@ class ReplicateProvider(BaseImageProvider):
         retry=retry_if_exception_type((httpx.TimeoutException, httpx.HTTPStatusError)),
     )
     async def _create_prediction(self, request: GenerationRequest) -> dict[str, Any]:
+        client = await self._ensure_client()
         model = request.model or self.default_model
         input_data: dict[str, Any] = {
             "prompt": request.prompt,
@@ -69,14 +86,15 @@ class ReplicateProvider(BaseImageProvider):
         input_data.update(request.extra_params)
 
         # Use model-based prediction endpoint for newer models
-        response = await self.client.post(f"/models/{model}/predictions", json={"input": input_data})
+        response = await client.post(f"/models/{model}/predictions", json={"input": input_data})
         response.raise_for_status()
         return response.json()
 
     async def _poll_prediction(self, prediction_id: str, timeout: int = 300) -> dict[str, Any]:
+        client = await self._ensure_client()
         start = time.time()
         while time.time() - start < timeout:
-            response = await self.client.get(f"/predictions/{prediction_id}")
+            response = await client.get(f"/predictions/{prediction_id}")
             response.raise_for_status()
             data = response.json()
             status = data.get("status")
@@ -188,7 +206,8 @@ class StabilityAIProvider(BaseImageProvider):
 
     async def check_health(self) -> bool:
         try:
-            response = await self.client.get("/user/account")
+            client = await self._ensure_client()
+            response = await client.get("/models")
             return response.status_code == 200
         except Exception:
             return False
@@ -306,6 +325,77 @@ class NanoBananaClient:
         if not results:
             raise RuntimeError("Image-to-image generation returned no results")
         return results[0].image_data
+
+    async def generate_from_references(
+        self,
+        reference_paths: list[str],
+        num_images: int,
+        model_name: str = "",
+        prompt: str = "",
+        negative_prompt: str = "",
+        width: int = 1024,
+        height: int = 1024,
+        session: Any = None,
+    ) -> list[GenerationResult]:
+        model = model_name or "black-forest-labs/flux-schnell"
+
+        if session is not None and isinstance(self.provider, ReplicateProvider):
+            from services.settings_service import get_provider_api_key
+            db_key = await get_provider_api_key("replicate_api_key", session)
+            if db_key:
+                await self.provider.configure_key(db_key)
+
+        logger.info(
+            "generate_from_references",
+            provider=settings.image_provider,
+            references=len(reference_paths),
+            num_images=num_images,
+            model=model,
+            prompt_len=len(prompt),
+        )
+
+        is_img2img = (
+            "flux" in model.lower()
+            or "sdxl" in model.lower()
+            or "stable-diffusion" in model.lower()
+        )
+        default_prompt = "Professional e-commerce product photograph. Clean white background, studio lighting, 8K quality."
+        all_results: list[GenerationResult] = []
+
+        for idx in range(num_images):
+            extra: dict[str, Any] = {}
+
+            if is_img2img and reference_paths:
+                ref_path = reference_paths[idx % len(reference_paths)]
+                if os.path.exists(ref_path):
+                    with open(ref_path, "rb") as f:
+                        encoded = base64.b64encode(f.read()).decode("utf-8")
+                    ext = Path(ref_path).suffix.lower()
+                    mime = "image/png" if ext in (".png",) else "image/jpeg"
+                    extra["image"] = f"data:{mime};base64,{encoded}"
+                    extra["strength"] = 0.85
+                    logger.info("img2img_ref", path=ref_path, idx=idx)
+                else:
+                    logger.warning("ref_path_not_found", path=ref_path)
+            elif reference_paths:
+                logger.info("text_to_image_fallback", model=model, idx=idx)
+
+            request = GenerationRequest(
+                prompt=prompt or default_prompt,
+                negative_prompt=negative_prompt,
+                num_images=1,
+                width=width,
+                height=height,
+                model=model,
+                steps=4 if is_img2img else 30,
+                guidance_scale=3.0 if is_img2img else 7.5,
+                extra_params=extra,
+            )
+            results = await self.provider.generate(request)
+            if results:
+                all_results.extend(results)
+
+        return all_results
 
     async def check_health(self) -> bool:
         return await self.provider.check_health()

@@ -119,6 +119,25 @@ export default function DashboardLayout({
     }
   }, [hydrationTimeout, token, router]);
 
+  // Periodically refresh session TTL (every 30 minutes)
+  useEffect(() => {
+    if (!token) return;
+    const interval = setInterval(async () => {
+      try {
+        const stored = localStorage.getItem("auth_session");
+        if (!stored) return;
+        const parsed = JSON.parse(stored);
+        const t = parsed?.state?.token ?? parsed?.token;
+        if (!t) return;
+        await fetch("/api/v1/auth/refresh", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${t}` },
+        });
+      } catch {}
+    }, 30 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [token]);
+
   // Show loading state while hydrating (max 5s), then redirect to login if no token
   if (!hydrated && !hydrationTimeout) {
     return (

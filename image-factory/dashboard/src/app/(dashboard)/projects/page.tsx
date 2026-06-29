@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { api } from "@/lib/api";
@@ -9,10 +9,173 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "@/hooks/use-toast";
-import { Plus, FolderKanban, ExternalLink, Trash2, Search, Clock } from "lucide-react";
+import {
+  Plus, FolderKanban, ExternalLink, Trash2, Search, Clock, Loader2, CheckCircle2, AlertTriangle,
+  Download, Cloud, Settings,
+} from "lucide-react";
 import { formatDate, statusLabel, statusColor } from "@/lib/utils";
+
+function JobStatusBadge({ projectId }: { projectId: string }) {
+  const { data: jobStatus } = useQuery({
+    queryKey: ["project-jobs", projectId],
+    queryFn: () => api.getProjectJobs(projectId),
+    refetchInterval: 5000,
+  });
+
+  if (!jobStatus || jobStatus.total === 0) return null;
+
+  const active = jobStatus.pending + jobStatus.scraping + jobStatus.generating;
+  const failed = jobStatus.failed;
+  const done = jobStatus.completed + jobStatus.scraped + jobStatus.skipped;
+  const allDone = active === 0;
+
+  if (allDone && failed > 0) {
+    return (
+      <div className="flex items-center gap-1 text-xs mt-2">
+        <AlertTriangle className="h-3 w-3 text-amber-500" />
+        <span className="text-amber-600">{done} done, {failed} failed</span>
+      </div>
+    );
+  }
+
+  if (allDone && done > 0) {
+    return (
+      <div className="flex items-center gap-1 text-xs mt-2">
+        <CheckCircle2 className="h-3 w-3 text-emerald-500" />
+        <span className="text-emerald-600">{done} complete</span>
+      </div>
+    );
+  }
+
+  if (active > 0) {
+    const progress = jobStatus.total > 0 ? Math.round((done / jobStatus.total) * 100) : 0;
+    return (
+      <div className="flex items-center gap-1 text-xs mt-2">
+        <Loader2 className="h-3 w-3 text-blue-500 animate-spin" />
+        <span className="text-blue-600">
+          {jobStatus.scraping > 0
+            ? `Scraping: ${jobStatus.scraping} active`
+            : jobStatus.generating > 0
+              ? `Generating: ${jobStatus.generating} active`
+              : `Queued: ${jobStatus.pending} pending`
+          }
+          {jobStatus.total > 0 && ` (${progress}%)`}
+        </span>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+function ExportProjectDialog({ projectId, projectName, hasProducts }: { projectId: string; projectName: string; hasProducts: boolean }) {
+  const [open, setOpen] = useState(false);
+  const [zipLoading, setZipLoading] = useState(false);
+  const [driveLoading, setDriveLoading] = useState(false);
+  const [driveResult, setDriveResult] = useState<{ success?: boolean; folder_url?: string; error?: string } | null>(null);
+  const [showDriveHint, setShowDriveHint] = useState(false);
+  const queryClient = useQueryClient();
+
+  const { data: driveCreds } = useQuery({
+    queryKey: ["drive-credentials"],
+    queryFn: () => api.getDriveCredentials(),
+    staleTime: 30000,
+  });
+  const isDriveConfigured = driveCreds?.configured === true;
+
+  const handleZipDownload = async () => {
+    setZipLoading(true);
+    try {
+      const blob = await api.exportProjectZip(projectId, projectName);
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${projectName.replace(/[^a-zA-Z0-9_-]/g, "_")}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      toast({ title: "Export complete", description: "ZIP download started." });
+    } catch (err: any) {
+      toast({ title: "Export failed", description: err.message || "Could not generate ZIP", variant: "destructive" });
+    } finally {
+      setZipLoading(false);
+    }
+  };
+
+  const handleDriveExport = async () => {
+    if (!isDriveConfigured) {
+      setShowDriveHint(true);
+      return;
+    }
+    setDriveLoading(true);
+    setDriveResult(null);
+    try {
+      const res = await api.exportProjectToDrive(projectId, projectName);
+      setDriveResult({ success: res.status === "success", folder_url: res.folder_url, error: res.errors?.[0] });
+      if (res.status === "success") {
+        toast({ title: "Drive export complete", description: `Uploaded ${res.uploaded} images to Drive.` });
+        queryClient.invalidateQueries({ queryKey: ["notifications"] });
+      } else {
+        toast({ title: "Drive export partial", description: res.errors?.[0] || "Some files failed", variant: "destructive" });
+      }
+    } catch (err: any) {
+      setDriveResult({ success: false, error: err.message });
+      toast({ title: "Drive export failed", description: err.message, variant: "destructive" });
+    } finally {
+      setDriveLoading(false);
+    }
+  };
+
+  return (
+    <DropdownMenu open={open} onOpenChange={setOpen}>
+      <DropdownMenuTrigger asChild>
+        <Button variant="outline" size="sm" disabled={!hasProducts}>
+          <Download className="h-3 w-3 mr-1" /> Export
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-64">
+        <DropdownMenuItem onSelect={(e) => { e.preventDefault(); handleZipDownload(); }} disabled={zipLoading}>
+          {zipLoading ? (
+            <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Preparing ZIP...</>
+          ) : (
+            <><Download className="h-4 w-4 mr-2" /> Download ZIP</>
+          )}
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={(e) => { e.preventDefault(); handleDriveExport(); }} disabled={driveLoading}>
+          {driveLoading ? (
+            <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Exporting to Drive...</>
+          ) : (
+            <><Cloud className="h-4 w-4 mr-2" /> Export to Google Drive</>
+          )}
+        </DropdownMenuItem>
+        {showDriveHint && !isDriveConfigured && (
+          <div className="px-3 py-2 text-xs text-muted-foreground border-t" onSelect={(e) => e.preventDefault()}>
+            Connect Google Drive in{" "}
+            <Link href="/settings" className="text-primary hover:underline inline-flex items-center gap-0.5" onClick={() => setOpen(false)}>
+              <Settings className="h-3 w-3" /> Settings
+            </Link>{" "}
+            to enable this option.
+          </div>
+        )}
+        {driveResult && (
+          <div className={`px-3 py-2 text-xs border-t ${driveResult.success ? "text-emerald-600" : "text-red-600"}`} onSelect={(e) => e.preventDefault()}>
+            {driveResult.success ? (
+              <>Exported to Drive. {driveResult.folder_url && <a href={driveResult.folder_url} target="_blank" rel="noopener noreferrer" className="underline">Open folder</a>}</>
+            ) : (
+              <>Failed: {driveResult.error}</>
+            )}
+          </div>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
 
 export default function ProjectsPage() {
   const [search, setSearch] = useState("");
@@ -122,6 +285,7 @@ export default function ProjectsPage() {
                   <span>{project.product_count || 0} products</span>
                   <span>{project.generated_image_count || 0} images</span>
                 </div>
+                <JobStatusBadge projectId={project.id} />
                 <div className="mt-2 flex items-center gap-1 text-xs text-muted-foreground">
                   <Clock className="h-3 w-3" />
                   {formatDate(project.created_at)}
@@ -132,6 +296,11 @@ export default function ProjectsPage() {
                       <ExternalLink className="h-3 w-3 mr-1" /> Open
                     </Button>
                   </Link>
+                  <ExportProjectDialog
+                    projectId={project.id}
+                    projectName={project.name}
+                    hasProducts={(project.product_count || 0) > 0}
+                  />
                   <Button
                     variant="ghost"
                     size="sm"

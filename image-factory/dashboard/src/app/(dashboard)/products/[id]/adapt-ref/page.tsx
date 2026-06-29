@@ -110,10 +110,22 @@ export default function AdaptRefPage() {
   const [approveMessage, setApproveMessage] = useState("");
   const [lastConfidence, setLastConfidence] = useState<number | null>(null);
 
+  // Fetch product name for header (independent of scoring)
+  const { data: productDetail } = useQuery({
+    queryKey: ["product-detail", productId],
+    queryFn: () => api.getProductDetail(productId),
+    enabled: true,
+    retry: 2,
+  });
+  const productName = productDetail?.product?.product_name;
+  const productError = productDetail === null || productDetail === undefined ? undefined : undefined;
+
+  // Auto-fetch scoring on mount
   const { data, isLoading, error, refetch } = useQuery<ScoreResponse>({
     queryKey: ["score-references", productId, referenceCount],
     queryFn: () => api.scoreReferences(productId, referenceCount),
-    enabled: false,
+    enabled: true,
+    retry: 1,
   });
 
   const { data: refStatus, refetch: refetchStatus } = useQuery<ReferenceStatus>({
@@ -131,6 +143,20 @@ export default function AdaptRefPage() {
       }
     }
   }, [refStatus, hasAutoRan]);
+
+  // Auto-select when scoring data arrives
+  useEffect(() => {
+    if (data && !hasAutoRan && !isLocked) {
+      const sorted = [...data.images].sort((a, b) => b.image_score - a.image_score);
+      const topIds = sorted.slice(0, referenceCount).map((img) => img.asset_id);
+      if (data.confidence >= 60) {
+        setSelectedIds(new Set(topIds));
+      }
+      setAutoSelectIds(topIds);
+      setHasAutoRan(true);
+      setLastConfidence(data.confidence);
+    }
+  }, [data, referenceCount, hasAutoRan, isLocked]);
 
   const saveMutation = useMutation({
     mutationFn: async (params: { selected: string[]; approved: boolean }) =>
@@ -219,7 +245,7 @@ export default function AdaptRefPage() {
     return (
       <div className="flex flex-col items-center gap-4 py-12">
         <AlertTriangle className="h-12 w-12 text-muted-foreground" />
-        <p className="text-muted-foreground">Failed to load product</p>
+        <p className="text-muted-foreground">Failed to load scoring data</p>
         <Link href="/products">
           <Button variant="outline" size="sm">
             <ArrowLeft className="h-4 w-4 mr-2" />
@@ -242,7 +268,7 @@ export default function AdaptRefPage() {
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Adaptive Reference Selection</h1>
             <p className="text-sm text-muted-foreground">
-              {data?.product_name || "Loading..."}
+              {productName || (data?.product_name) || (isLoading ? "Loading..." : "Product not found")}
             </p>
           </div>
         </div>

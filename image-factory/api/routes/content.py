@@ -75,41 +75,45 @@ async def list_content_products(
 @router.get("/products/stats")
 async def get_content_stats(
     session: AsyncSession = Depends(get_session),
+    status: str = "",
+    search: str = "",
 ):
-    total_result = await session.execute(select(func.count(ProductLink.id)))
-    total = total_result.scalar() or 0
+    base_filter = True
+    if status:
+        base_filter = ProductLink.status == status
+    if search:
+        base_filter = base_filter & ProductLink.product_name.ilike(f"%{search}%") if isinstance(base_filter, bool) else base_filter & ProductLink.product_name.ilike(f"%{search}%")
 
-    pending = await session.execute(
-        select(func.count(ProductLink.id)).where(ProductLink.status == "pending")
-    )
-    scraping = await session.execute(
-        select(func.count(ProductLink.id)).where(ProductLink.status == "scraping")
-    )
-    scraped = await session.execute(
-        select(func.count(ProductLink.id)).where(ProductLink.status == "scraped")
-    )
-    generating = await session.execute(
-        select(func.count(ProductLink.id)).where(ProductLink.status == "generating")
-    )
-    completed = await session.execute(
-        select(func.count(ProductLink.id)).where(ProductLink.status == "completed")
-    )
-    failed = await session.execute(
-        select(func.count(ProductLink.id)).where(ProductLink.status.in_(["failed", "error"]))
-    )
-    skipped = await session.execute(
-        select(func.count(ProductLink.id)).where(ProductLink.status == "skipped")
-    )
+    async def count_with_filter(status_filter=None):
+        q = select(func.count(ProductLink.id))
+        conditions = []
+        if isinstance(status_filter, list):
+            conditions.append(ProductLink.status.in_(status_filter))
+        elif status_filter:
+            conditions.append(ProductLink.status == status_filter)
+        if search:
+            conditions.append(ProductLink.product_name.ilike(f"%{search}%"))
+        r = await session.execute(q.where(and_(*conditions)) if conditions else q)
+        return r.scalar() or 0
+
+    total = await count_with_filter()
+    pending = await count_with_filter("pending")
+    scraping = await count_with_filter("scraping")
+    scraped = await count_with_filter("scraped")
+    generating = await count_with_filter("generating")
+    completed = await count_with_filter("completed")
+    failed = await count_with_filter(["failed", "error"])
+    skipped = await count_with_filter("skipped")
 
     return {
         "total": total,
-        "pending": pending.scalar() or 0,
-        "scraping": scraping.scalar() or 0,
-        "scraped": scraped.scalar() or 0,
-        "generating": generating.scalar() or 0,
-        "completed": completed.scalar() or 0,
-        "failed": failed.scalar() or 0,
-        "skipped": skipped.scalar() or 0,
+        "pending": pending,
+        "scraping": scraping,
+        "scraped": scraped,
+        "generating": generating,
+        "completed": completed,
+        "failed": failed,
+        "skipped": skipped,
     }
 
 
@@ -226,11 +230,22 @@ async def get_product_detail(
         if link.product_name in translated_map:
             link.product_name = translated_map[link.product_name]
 
+    pl_meta = link.meta or {}
+    ref_ids = pl_meta.get("reference_selected_ids", [])
+    ref_approved = pl_meta.get("reference_approved", False)
+    ref_locked = pl_meta.get("reference_locked", False)
+
     return ProductDetailResponse(
         product=ProductLinkSchema.model_validate(link),
         scraped_images=scraped_images,
         generated_images=generated_images,
         jobs=jobs_list,
+        reference_status={
+            "selected_count": len(ref_ids),
+            "approved": ref_approved,
+            "locked": ref_locked,
+            "can_generate": ref_approved and len(ref_ids) >= 3,
+        },
     )
 
 

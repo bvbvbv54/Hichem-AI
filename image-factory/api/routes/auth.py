@@ -118,6 +118,21 @@ async def logout(redis=Depends(get_redis), authorization: str | None = Header(No
     return {"status": "logged_out"}
 
 
+@router.post("/refresh")
+async def refresh_session(
+    redis=Depends(get_redis),
+    authorization: str | None = Header(None),
+):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    token = authorization[7:]
+    session_data_raw = await redis.get(f"session:{token}")
+    if not session_data_raw:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired session")
+    await redis.expire(f"session:{token}", SESSION_TTL)
+    return {"status": "refreshed", "expires_in": SESSION_TTL}
+
+
 @router.get("/me", response_model=UserResponse)
 async def auth_me(
     session: AsyncSession = Depends(get_session),

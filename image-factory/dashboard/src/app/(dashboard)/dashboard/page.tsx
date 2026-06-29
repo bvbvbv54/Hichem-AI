@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
   Activity, Settings, ShieldAlert, RefreshCw,
-  DollarSign, Database, BarChart3,
+  DollarSign, Database, BarChart3, AlertTriangle,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -116,6 +116,18 @@ export default function DashboardPage() {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           {[1, 2, 3, 4].map((i) => <Skeleton key={i} className="h-24 rounded-xl" />)}
         </div>
+      </div>
+    );
+  }
+
+  if (!stats) {
+    return (
+      <div className="flex flex-col items-center gap-4 py-12">
+        <AlertTriangle className="h-12 w-12 text-muted-foreground" />
+        <p className="text-muted-foreground">Failed to load dashboard data</p>
+        <Button variant="outline" size="sm" onClick={refreshAll}>
+          <RefreshCw className="h-4 w-4 mr-2" /> Retry
+        </Button>
       </div>
     );
   }

@@ -114,6 +114,41 @@ async def delete_project(project_id: str, session: AsyncSession = Depends(get_se
     return {"message": "Project deleted"}
 
 
+@router.get("/{project_id}/jobs")
+async def get_project_job_status(
+    project_id: str,
+    session: AsyncSession = Depends(get_session),
+):
+    p_result = await session.execute(select(Project).where(Project.id == project_id))
+    p = p_result.scalar_one_or_none()
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    p_links = await session.execute(
+        select(ProductLink).where(ProductLink.project_id == project_id)
+    )
+    links = p_links.scalars().all()
+    total = len(links)
+    pending = sum(1 for l in links if l.status in ("pending", "queued"))
+    scraping = sum(1 for l in links if l.status == "scraping")
+    scraped = sum(1 for l in links if l.status == "scraped")
+    completed = sum(1 for l in links if l.status == "completed")
+    generating = sum(1 for l in links if l.status == "generating")
+    failed = sum(1 for l in links if l.status in ("failed", "error"))
+    skipped = sum(1 for l in links if l.status == "skipped")
+
+    return {
+        "total": total,
+        "pending": pending,
+        "scraping": scraping,
+        "scraped": scraped,
+        "completed": completed,
+        "generating": generating,
+        "failed": failed,
+        "skipped": skipped,
+    }
+
+
 @router.get("/{project_id}/products")
 async def get_project_products(
     project_id: str,

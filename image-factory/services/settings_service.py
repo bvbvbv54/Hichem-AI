@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from typing import Any, Optional
 
 from sqlalchemy import select
@@ -72,7 +73,7 @@ async def set_google_api_key(value: str, session: AsyncSession) -> None:
 
 
 async def get_provider_keys_status(session: AsyncSession) -> dict:
-    keys = ["google_api_key", "openrouter_api_key"]
+    keys = ["google_api_key", "openrouter_api_key", "replicate_api_key"]
     result = {}
     for key in keys:
         if key == "google_api_key":
@@ -87,10 +88,8 @@ async def get_provider_keys_status(session: AsyncSession) -> dict:
     return result
 
 
-# Pricing is now internal only — read from configs/pricing.py
-
-
-AVAILABLE_IMG2IMG_MODELS = [
+# Hardcoded legacy models (Replicate, OpenAI, etc.) — not yet in model_pricing
+_LEGACY_MODELS = [
     {"id": "google/imagen-4", "name": "Google Imagen 4", "provider": "replicate"},
     {"id": "google-nano-banana", "name": "Google Nano Banana (Imagen)", "provider": "google"},
     {"id": "stability-ai/sdxl", "name": "Stability AI SDXL", "provider": "replicate"},
@@ -100,20 +99,47 @@ AVAILABLE_IMG2IMG_MODELS = [
     {"id": "dall-e-3", "name": "OpenAI DALL-E 3", "provider": "openai"},
 ]
 
-IMG2IMG_MODEL_IDS = [m["id"] for m in AVAILABLE_IMG2IMG_MODELS]
+_ALL_HARDCODED_IDS = [m["id"] for m in _LEGACY_MODELS]
 
 
 async def get_img2img_config(session: AsyncSession) -> dict:
     model, model_src = await get_setting_with_source("img2img_model", session, "google/imagen-4")
+
+    # Load models from DB (model_pricing table), filtered by sunset
+    from services.nano_banana.pricing import get_available_models
+    db_models = await get_available_models(session, date.today())
+    db_model_list = [
+        {
+            "id": m.model_id,
+            "name": m.display_name,
+            "provider": m.provider,
+            "pricing_model": m.pricing_model or "token_based",
+            "cost_per_output_image": m.cost_per_output_image or 0.0,
+            "cost_per_reference_image": m.cost_per_reference_image or 0.0,
+            "deprecated": m.deprecated or False,
+            "deprecation_message": m.deprecation_message or "",
+            "sunset_date": m.sunset_date.isoformat() if m.sunset_date else None,
+        }
+        for m in db_models
+    ]
+
+    # Merge: DB models first, then legacy models not overlapping
+    db_ids = {m["id"] for m in db_model_list}
+    legacy_list = [m for m in _LEGACY_MODELS if m["id"] not in db_ids]
+
     return {
         "img2img_model": {"value": model, "source": model_src},
-        "available_models": AVAILABLE_IMG2IMG_MODELS,
+        "available_models": db_model_list + legacy_list,
     }
 
 
 async def set_img2img_config(model: str, session: AsyncSession) -> None:
-    if model not in IMG2IMG_MODEL_IDS:
-        raise ValueError(f"Unknown model: {model}. Available: {', '.join(IMG2IMG_MODEL_IDS)}")
+    # Check against both DB models and hardcoded list
+    from services.nano_banana.pricing import get_available_models
+    db_models = await get_available_models(session, date.today())
+    valid_ids = {m.model_id for m in db_models} | set(_ALL_HARDCODED_IDS)
+    if model not in valid_ids:
+        raise ValueError(f"Unknown model: {model}. Available models from registry.")
     await set_setting("img2img_model", model, session)
 
 
@@ -140,10 +166,14 @@ async def get_all_settings(session: AsyncSession) -> dict:
     img2img = await get_img2img_config(session)
     storage = await get_storage_config(session)
     budget, budget_src = await get_setting_with_source("monthly_budget_cents", session, str(settings.monthly_budget_cents))
+    buffer_val, buffer_src = await get_setting_with_source("cost_safety_buffer", session, "1.20")
+    cleanup_val, cleanup_src = await get_setting_with_source("auto_cleanup_local", session, "true")
 
     return {
         "provider_keys": provider_keys,
         "img2img": img2img,
         "storage": storage,
         "monthly_budget_cents": {"value": int(budget), "source": budget_src},
+        "cost_safety_buffer": {"value": float(buffer_val), "source": buffer_src},
+        "auto_cleanup_local": {"value": cleanup_val.lower() == "true", "source": cleanup_src},
     }

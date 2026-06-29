@@ -453,6 +453,8 @@ async def _execute_product_pipeline(self: Any, job_id: str, url: str, project_na
                         "product_name": product_name,
                         "url": url,
                         "job_id": job_id,
+                        "project_name": project_name,
+                        "batch_id": parent_batch_id or "",
                     },
                 )
 
@@ -517,6 +519,8 @@ async def _execute_product_pipeline(self: Any, job_id: str, url: str, project_na
                         "job_id": job_id,
                         "failure_type": failure_type or "unknown",
                         "failure_detail": failure_detail or str(exc),
+                        "project_name": project_name,
+                        "batch_id": parent_batch_id or "",
                     },
                 )
 

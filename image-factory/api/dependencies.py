@@ -42,3 +42,13 @@ async def get_redis() -> aioredis.Redis:
         yield r
     finally:
         await r.aclose()
+
+
+async def get_redis_connection() -> aioredis.Redis | None:
+    """Standalone Redis connection for middleware usage (not a FastAPI dependency)."""
+    try:
+        r = await aioredis.from_url(settings.redis_url, socket_connect_timeout=3)
+        await r.ping()
+        return r
+    except Exception:
+        return None

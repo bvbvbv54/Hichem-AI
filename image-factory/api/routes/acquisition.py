@@ -51,6 +51,8 @@ monitor = AcquisitionMonitor()
 class SubmitUrlsRequest(BaseModel):
     urls: list[str]
     project_id: str = "default"
+    num_images_per_product: int = 0
+    model_name: str = ""
 
 
 class SubmitUrlsResponse(BaseModel):
@@ -58,6 +60,8 @@ class SubmitUrlsResponse(BaseModel):
     skipped_banned: int
     skipped_duplicates: int
     jobs: list[dict]
+    num_images_per_product: int = 0
+    model_name: str = ""
 
 
 @router.post("/submit", summary="Submit product URLs for scraping")
@@ -133,6 +137,20 @@ async def submit_urls(
 
     await session.commit()
 
+    # Store generation config in Redis for this batch
+    if req.num_images_per_product > 0 or req.model_name:
+        try:
+            from redis import Redis
+            redis_client = Redis.from_url(settings.redis_url)
+            gen_config = {
+                "num_images_per_product": req.num_images_per_product,
+                "model_name": req.model_name,
+            }
+            redis_client.setex(f"batch:{batch_id}:gen_config", 86400, json.dumps(gen_config))
+            redis_client.close()
+        except Exception as e:
+            logger.warning("gen_config_redis_failed", error=str(e))
+
     for job in jobs:
         from workers.celery_app import celery_app
         celery_app.send_task(
@@ -147,6 +165,8 @@ async def submit_urls(
         skipped_banned=skipped_banned,
         skipped_duplicates=skipped_duplicates,
         jobs=jobs,
+        num_images_per_product=req.num_images_per_product,
+        model_name=req.model_name,
     )
 
 

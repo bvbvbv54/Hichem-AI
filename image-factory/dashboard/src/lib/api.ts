@@ -1,4 +1,5 @@
 const API_BASE = "/api/v1";
+const REQUEST_TIMEOUT_MS = 30000;
 
 class ApiError extends Error {
   status: number;
@@ -7,6 +8,18 @@ class ApiError extends Error {
     this.status = status;
     this.name = "ApiError";
   }
+}
+
+let _logoutRedirecting = false;
+
+function redirectToLogin() {
+  if (_logoutRedirecting) return;
+  _logoutRedirecting = true;
+  try {
+    const { useAuthStore } = require("@/lib/store");
+    useAuthStore.getState().logout();
+  } catch {}
+  window.location.href = "/login";
 }
 
 async function getToken(): Promise<string | null> {
@@ -32,10 +45,29 @@ async function request<T>(
   };
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers,
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      ...options,
+      headers,
+      signal: controller.signal,
+    });
+  } catch (err: any) {
+    clearTimeout(timeoutId);
+    if (err.name === "AbortError") {
+      throw new ApiError("Request timed out", 408);
+    }
+    throw new ApiError(err.message || "Network error", 0);
+  }
+  clearTimeout(timeoutId);
+
+  if (response.status === 401) {
+    redirectToLogin();
+    throw new ApiError("Unauthorized", 401);
+  }
 
   if (!response.ok) {
     const body = await response.text();
@@ -112,6 +144,12 @@ export const api = {
   deleteProject: (id: string) =>
     request<void>(`/projects/${id}`, { method: "DELETE" }),
 
+  // Project job status
+  getProjectJobs: (projectId: string) =>
+    request<{ total: number; pending: number; scraping: number; scraped: number; completed: number; generating: number; failed: number; skipped: number }>(
+      `/projects/${projectId}/jobs`
+    ),
+
   // Products within a project
   getProjectProducts: (projectId: string, params?: { status?: string; limit?: number; offset?: number }) =>
     request<{ products: any[]; total: number }>(
@@ -146,6 +184,7 @@ export const api = {
     num_images_per_product: number;
     image_descriptions: string[];
     prompt_template?: string;
+    model_name?: string;
   }) => request<any>("/products/generate", {
     method: "POST",
     body: JSON.stringify(data),
@@ -250,8 +289,24 @@ export const api = {
   retryContentProduct: (id: string) =>
     request<any>(`/content/products/${id}/retry`, { method: "POST" }),
 
-  getContentStats: () =>
-    request<any>("/content/products/stats"),
+  getContentStats: (params?: { status?: string; search?: string }) =>
+    request<any>(`/content/products/stats${buildQuery(params || {})}`),
+
+  // Model Pricing Registry
+  getModelPricing: (params?: { as_of_date?: string; include_hidden?: boolean }) => {
+    const query = new URLSearchParams();
+    if (params?.as_of_date) query.set("as_of_date", params.as_of_date);
+    if (params?.include_hidden) query.set("include_hidden", "true");
+    const qs = query.toString();
+    return request<any>(`/credits/models${qs ? `?${qs}` : ""}`);
+  },
+
+  // Storage / Cleanup
+  toggleCleanup: (enabled: boolean) =>
+    request<any>("/admin/settings/cleanup/toggle", {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
+    }),
 
   // Credit Check
   checkCredits: (data: { batch_id: string; num_images_per_product?: number }) =>
@@ -259,6 +314,23 @@ export const api = {
       method: "POST",
       body: JSON.stringify(data),
     }),
+
+  // Cost Estimate (token-based Nano Banana pricing)
+  getCostEstimate: (params: {
+    products: number;
+    images_per_product: number;
+    model_id?: string;
+    reference_count?: number;
+    resolution?: string;
+  }) => {
+    const query = new URLSearchParams();
+    query.set("products", String(params.products));
+    query.set("images_per_product", String(params.images_per_product));
+    if (params.model_id) query.set("model_id", params.model_id);
+    if (params.reference_count) query.set("reference_count", String(params.reference_count));
+    if (params.resolution) query.set("resolution", params.resolution);
+    return request<any>(`/credits/estimate?${query.toString()}`);
+  },
 
   // Provider Keys
   getProviderKeys: () => request<any>("/admin/provider-keys"),
@@ -288,10 +360,15 @@ export const api = {
     request<any>(`/admin/scrapfly/keys/${keyId}/unban`, { method: "POST" }),
 
   // Acquisition pipeline
-  submitUrls: (urls: string[], projectId?: string) =>
+  submitUrls: (urls: string[], projectId?: string, numImagesPerProduct?: number, modelName?: string) =>
     request<any>("/acquisition/submit", {
       method: "POST",
-      body: JSON.stringify({ urls, project_id: projectId || "default" }),
+      body: JSON.stringify({
+        urls,
+        project_id: projectId || "default",
+        num_images_per_product: numImagesPerProduct || 0,
+        model_name: modelName || "",
+      }),
     }),
 
   getAcquisitionStats: () => request<any>("/acquisition/stats"),
@@ -346,4 +423,20 @@ export const api = {
     request<any>(`/export/project/${projectId}/drive-export?project_name=${encodeURIComponent(projectName || "project")}`, {
       method: "POST",
     }),
+
+  // Image ban mechanism — reject bad scraped images so they aren't fetched again
+  banImageHash: (assetId: string, hash: string, filename: string) =>
+    request<any>("/assets/ban", {
+      method: "POST",
+      body: JSON.stringify({ asset_id: assetId, hash, filename }),
+    }),
+
+  unbanImageHash: (assetId: string, hash: string) =>
+    request<any>("/assets/unban", {
+      method: "POST",
+      body: JSON.stringify({ asset_id: assetId, hash }),
+    }),
+
+  getBannedHashes: () =>
+    request<{ hashes: string[] }>("/assets/banned-hashes"),
 };

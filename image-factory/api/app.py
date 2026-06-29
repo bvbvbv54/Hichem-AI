@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from configs.settings import settings
 from configs.logging import setup_logging, get_logger
-from database.session import init_db, close_db
+from database.session import init_db, close_db, async_session
 
 logger = get_logger(__name__)
 
@@ -17,6 +17,9 @@ async def lifespan(app: FastAPI):
     setup_logging()
     logger.info("starting_api", app=settings.app_name, version=settings.app_version)
     await init_db()
+    async with async_session() as session:
+        from services.nano_banana.pricing import seed_model_pricing
+        await seed_model_pricing(session)
     yield
     await close_db()
     logger.info("shutdown_api")

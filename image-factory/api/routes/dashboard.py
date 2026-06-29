@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import select, func
+from sqlalchemy import select, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.dependencies import get_redis
 from database.session import get_session
@@ -13,6 +13,7 @@ from database.models.product_link import ProductLink
 from configs.logging import get_logger
 from configs.settings import settings
 from services.nano_banana.credit_balancer import get_credit_balancer
+from services.cleanup import get_local_storage_size
 
 logger = get_logger(__name__)
 
@@ -42,7 +43,9 @@ async def get_dashboard_stats(session: AsyncSession = Depends(get_session)):
     failed_result = await session.execute(select(func.count(ProductLink.id)).where(ProductLink.status.in_(["failed", "error"])))
     failed = failed_result.scalar() or 0
 
-    ai_images_result = await session.execute(select(func.count(Asset.id)))
+    ai_images_result = await session.execute(
+        select(func.count(Asset.id)).where(text("meta->>'provider' = 'replicate'"))
+    )
     ai_images = ai_images_result.scalar() or 0
     scraped_images_result = await session.execute(
         select(func.coalesce(func.sum(ProductLink.scraped_image_count), 0))
@@ -60,6 +63,9 @@ async def get_dashboard_stats(session: AsyncSession = Depends(get_session)):
         balance = 0.0
         cost_per_image = 1.0
         total_cost_cents = 0.0
+
+    local_storage_bytes = await get_local_storage_size()
+    local_storage_mb = round(local_storage_bytes / (1024 * 1024), 1)
 
     # Avg time: always calculate from historical completed jobs
     completed_jobs_result = await session.execute(
@@ -100,6 +106,7 @@ async def get_dashboard_stats(session: AsyncSession = Depends(get_session)):
         "avg_processing_time_seconds": avg_time,
         "completion_percentage": weighted_pct,
         "scraped_count": scraped_count,
+        "local_storage_mb": local_storage_mb,
     }
 
 

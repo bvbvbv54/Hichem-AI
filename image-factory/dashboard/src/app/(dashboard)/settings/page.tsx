@@ -14,7 +14,7 @@ import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
-import { Key, Cloud, RefreshCw, Trash2, Eye, EyeOff, CheckCircle2, XCircle, Save, DollarSign, Image, FolderOpen, Zap, Ban, ShieldAlert } from "lucide-react";
+import { Key, Cloud, RefreshCw, Trash2, Eye, EyeOff, CheckCircle2, XCircle, Save, DollarSign, Image, FolderOpen, Zap, Ban, ShieldAlert, AlertTriangle, Table2, HardDrive } from "lucide-react";
 
 function DriveCredentialsSection() {
   const [jsonInput, setJsonInput] = useState("");
@@ -268,6 +268,12 @@ function Img2imgSection() {
     queryFn: () => api.getImg2imgSettings(),
   });
 
+  const { data: pricingData } = useQuery({
+    queryKey: ["model-pricing-registry"],
+    queryFn: () => api.getModelPricing({ include_hidden: true }),
+    staleTime: 60000,
+  });
+
   useEffect(() => {
     if (img2imgData?.img2img_model?.value) {
       setSelectedModel(img2imgData.img2img_model.value);
@@ -290,6 +296,19 @@ function Img2imgSection() {
 
   const availableModels = img2imgData?.available_models || [];
 
+  const getModelMeta = (modelId: string) => {
+    return pricingData?.models?.find((m: any) => m.model_id === modelId) || null;
+  };
+
+  const formatModelLabel = (m: any) => {
+    const meta = getModelMeta(m.id);
+    if (!meta) return `${m.name} (${m.provider})`;
+    const costStr = meta.cost_per_output_image > 0
+      ? `~$${meta.cost_per_output_image.toFixed(3)}/image`
+      : meta.pricing_model;
+    return `${meta.display_name} — ${costStr}`;
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex items-end gap-3">
@@ -300,11 +319,43 @@ function Img2imgSection() {
               <SelectValue placeholder="Select a model" />
             </SelectTrigger>
             <SelectContent>
-              {availableModels.map((m: any) => (
-                <SelectItem key={m.id} value={m.id}>{m.name} ({m.provider})</SelectItem>
-              ))}
+              {availableModels.map((m: any) => {
+                const meta = getModelMeta(m.id);
+                const isDeprecated = meta?.deprecated;
+                return (
+                  <div key={m.id} className="flex items-center gap-2 px-2 py-1">
+                    <SelectItem value={m.id} className="flex-1">
+                      <span className="flex items-center gap-2">
+                        {formatModelLabel(m)}
+                        {isDeprecated && <span className="text-amber-500 text-xs">⚠️</span>}
+                      </span>
+                    </SelectItem>
+                  </div>
+                );
+              })}
             </SelectContent>
           </Select>
+          {/* Deprecation warning for selected model */}
+          {(() => {
+            const meta = getModelMeta(selectedModel);
+            if (!meta?.deprecated) return null;
+            return (
+              <div className="mt-2 rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/20 p-3 space-y-1">
+                <div className="flex items-center gap-2 text-xs font-medium text-amber-700 dark:text-amber-400">
+                  <AlertTriangle className="h-3.5 w-3.5" />
+                  Deprecated Model
+                </div>
+                <p className="text-[11px] text-amber-600 dark:text-amber-500">
+                  {meta.deprecation_message || "This model is deprecated."}
+                </p>
+                {meta.sunset_date && (
+                  <p className="text-[11px] text-amber-600 dark:text-amber-500 font-medium">
+                    This model will be removed after {meta.sunset_date}.
+                  </p>
+                )}
+              </div>
+            );
+          })()}
         </div>
         <Button onClick={save} disabled={saving}>
           <Save className="h-4 w-4 mr-1" /> Save Model
@@ -313,6 +364,139 @@ function Img2imgSection() {
       {img2imgData?.img2img_model?.source && (
         <p className="text-xs text-muted-foreground">Source: {img2imgData.img2img_model.source}</p>
       )}
+    </div>
+  );
+}
+
+function ModelPricingTable() {
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ["model-pricing-table"],
+    queryFn: () => api.getModelPricing({ include_hidden: true }),
+    staleTime: 30000,
+  });
+
+  if (isLoading) return <Skeleton className="h-32 w-full" />;
+  if (isError) return <p className="text-sm text-rose-500">Failed to load model pricing data.</p>;
+
+  const models = data?.models || [];
+
+  if (models.length === 0) {
+    return <p className="text-sm text-muted-foreground">No models registered in the pricing table.</p>;
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="border-b text-left text-muted-foreground">
+            <th className="pb-2 pr-3 font-medium">Model</th>
+            <th className="pb-2 pr-3 font-medium">Tier</th>
+            <th className="pb-2 pr-3 font-medium text-right">Output Cost</th>
+            <th className="pb-2 pr-3 font-medium text-right">Reference Cost</th>
+            <th className="pb-2 pr-3 font-medium">Pricing Model</th>
+            <th className="pb-2 font-medium">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {models.map((m: any) => {
+            const isDeprecated = m.deprecated;
+            const isHidden = m.is_hidden;
+            let statusLabel = "Active";
+            let statusColor = "text-emerald-600 dark:text-emerald-400";
+            if (isHidden) {
+              statusLabel = "Hidden (post-sunset)";
+              statusColor = "text-muted-foreground";
+            } else if (isDeprecated) {
+              statusLabel = "Deprecated";
+              statusColor = "text-amber-600 dark:text-amber-400";
+            }
+            return (
+              <tr key={m.model_id} className={`border-b border-border/40 ${isHidden ? "opacity-40" : ""}`}>
+                <td className="py-2 pr-3 font-medium">{m.display_name}</td>
+                <td className="py-2 pr-3 text-muted-foreground">{m.model_id}</td>
+                <td className="py-2 pr-3 text-right font-mono">
+                  {m.cost_per_output_image > 0 ? `$${m.cost_per_output_image.toFixed(4)}` : "—"}
+                </td>
+                <td className="py-2 pr-3 text-right font-mono">
+                  {m.cost_per_reference_image > 0 ? `$${m.cost_per_reference_image.toFixed(4)}` : "—"}
+                </td>
+                <td className="py-2 pr-3 text-muted-foreground">{m.pricing_model}</td>
+                <td className={`py-2 font-medium ${statusColor}`}>
+                  <span className="flex items-center gap-1">
+                    {isDeprecated && !isHidden && <AlertTriangle className="h-3 w-3" />}
+                    {statusLabel}
+                  </span>
+                  {isDeprecated && m.sunset_date && !isHidden && (
+                    <span className="block text-[10px] text-muted-foreground">
+                      Sunset: {m.sunset_date}
+                    </span>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function CleanupToggleSection() {
+  const [cleanupEnabled, setCleanupEnabled] = useState(true);
+  const [toggling, setToggling] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    authFetch("/api/v1/admin/settings")
+      .then((res) => res.json())
+      .then((data) => {
+        const val = data?.auto_cleanup_local;
+        if (typeof val === "object" && val !== null) {
+          setCleanupEnabled(val.value === true);
+        } else if (typeof val === "boolean") {
+          setCleanupEnabled(val);
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  const toggle = async () => {
+    setToggling(true);
+    try {
+      const res = await authFetch("/api/v1/admin/settings/cleanup/toggle", {
+        method: "PUT",
+        body: JSON.stringify({ enabled: !cleanupEnabled }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setCleanupEnabled(!cleanupEnabled);
+      toast({ title: `Auto-cleanup ${!cleanupEnabled ? "enabled" : "disabled"}` });
+    } catch (err: any) {
+      toast({ title: "Failed to toggle cleanup", description: err.message, variant: "destructive" });
+    } finally {
+      setToggling(false);
+    }
+  };
+
+  if (loading) return <Skeleton className="h-16 w-full" />;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <Label>Auto-cleanup local files</Label>
+          <p className="text-xs text-muted-foreground">
+            When enabled, the periodic task deletes local image files after R2 upload is confirmed via HEAD request.
+            When disabled, the task logs what it would have deleted without removing files.
+          </p>
+        </div>
+        <Switch checked={cleanupEnabled} onCheckedChange={toggle} disabled={toggling} />
+      </div>
+      <p className="text-xs text-muted-foreground">
+        {cleanupEnabled
+          ? "Cleanup runs every 30 minutes. Files are only deleted after R2 HEAD verification succeeds."
+          : "Dry-run mode: the cleanup task will log deletions but not remove any files."}
+      </p>
     </div>
   );
 }
@@ -570,6 +754,11 @@ export default function SettingsPage() {
   const [showGoogleKey, setShowGoogleKey] = useState(false);
   const [savingGoogle, setSavingGoogle] = useState(false);
   const [googleKeyError, setGoogleKeyError] = useState("");
+  const [replicateKey, setReplicateKey] = useState("");
+  const [savedReplicateKey, setSavedReplicateKey] = useState(false);
+  const [showReplicateKey, setShowReplicateKey] = useState(false);
+  const [savingReplicate, setSavingReplicate] = useState(false);
+  const [replicateKeyError, setReplicateKeyError] = useState("");
 
   const queryClient = useQueryClient();
 
@@ -581,6 +770,9 @@ export default function SettingsPage() {
   useEffect(() => {
     if (providerKeys?.google_api_key?.configured) {
       setSavedGoogleKey(true);
+    }
+    if (providerKeys?.replicate_api_key?.configured) {
+      setSavedReplicateKey(true);
     }
   }, [providerKeys]);
 
@@ -619,7 +811,40 @@ export default function SettingsPage() {
     }
   };
 
+  const validateReplicateKey = (key: string): string => {
+    if (!key.trim()) return "Key is required";
+    if (!key.trim().startsWith("r8_") && !key.trim().startsWith("r8rk_")) return "Replicate API keys must start with 'r8_'";
+    if (key.trim().length < 20) return "Key seems too short";
+    return "";
+  };
 
+  const saveReplicateKey = async () => {
+    const error = validateReplicateKey(replicateKey);
+    if (error) {
+      setReplicateKeyError(error);
+      return;
+    }
+    setReplicateKeyError("");
+    setSavingReplicate(true);
+    try {
+      const result = await authFetch("/api/v1/admin/provider-keys/replicate", {
+        method: "PUT",
+        body: JSON.stringify({ key: replicateKey.trim() }),
+      });
+      if (!result.ok) {
+        const text = await result.text();
+        throw new Error(text);
+      }
+      setSavedReplicateKey(true);
+      setReplicateKey("");
+      toast({ title: "Replicate API key saved" });
+      queryClient.invalidateQueries({ queryKey: ["provider-keys"] });
+    } catch (err: any) {
+      toast({ title: "Failed to save key", description: err.message, variant: "destructive" });
+    } finally {
+      setSavingReplicate(false);
+    }
+  };
 
   return (
     <div className="space-y-6 max-w-2xl">
@@ -675,6 +900,41 @@ export default function SettingsPage() {
 
           <Separator />
 
+          {/* Replicate API Key (for FLUX model access) */}
+          <div className="space-y-2">
+            <Label>Replicate API Key</Label>
+            <p className="text-xs text-muted-foreground">Required for FLUX.1 Schnell and other Replicate-hosted image generation models. Get one from <a href="https://replicate.com/account/api-tokens" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Replicate API Tokens</a>.</p>
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <Input
+                  type={showReplicateKey ? "text" : "password"}
+                  placeholder={savedReplicateKey ? "Key is configured on server" : "Enter your Replicate API key (starts with r8_...)"}
+                  value={replicateKey}
+                  onChange={(e) => {
+                    setReplicateKey(e.target.value);
+                    if (replicateKeyError) setReplicateKeyError("");
+                  }}
+                  className={replicateKeyError ? "border-red-500" : ""}
+                />
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7"
+                  onClick={() => setShowReplicateKey(!showReplicateKey)}
+                >
+                  {showReplicateKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </Button>
+              </div>
+              <Button onClick={saveReplicateKey} disabled={!replicateKey.trim() || savingReplicate}>
+                <Save className="h-4 w-4 mr-1" /> Save
+              </Button>
+            </div>
+            {replicateKeyError && <p className="text-xs text-red-500">{replicateKeyError}</p>}
+            {savedReplicateKey && !replicateKey.trim() && (
+              <p className="text-xs text-green-600 font-medium">Key is configured on server</p>
+            )}
+          </div>
+
         </CardContent>
       </Card>
 
@@ -689,6 +949,20 @@ export default function SettingsPage() {
         </CardHeader>
         <CardContent>
           <Img2imgSection />
+        </CardContent>
+      </Card>
+
+      {/* Model Pricing Table */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Table2 className="h-5 w-5" />
+            Model Pricing Registry
+          </CardTitle>
+          <CardDescription>System-managed pricing and lifecycle metadata for all image generation models. Sourced from the model_pricing database table.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <ModelPricingTable />
         </CardContent>
       </Card>
 
@@ -717,6 +991,20 @@ export default function SettingsPage() {
         </CardHeader>
         <CardContent>
           <StorageSection />
+        </CardContent>
+      </Card>
+
+      {/* Local File Cleanup */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <HardDrive className="h-5 w-5" />
+            Local File Cleanup
+          </CardTitle>
+          <CardDescription>Automatically delete local image files after they are confirmed uploaded to R2. Files are only removed after HEAD verification confirms the remote copy is accessible.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <CleanupToggleSection />
         </CardContent>
       </Card>
 

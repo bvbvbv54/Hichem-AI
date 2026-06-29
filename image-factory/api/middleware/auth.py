@@ -44,7 +44,16 @@ class AuthMiddleware:
         if auth_header.startswith("Bearer "):
             token = auth_header[7:]
             if token:
-                return await self.app(scope, receive, send)
+                try:
+                    from api.dependencies import get_redis_connection
+                    redis = await get_redis_connection()
+                    if redis:
+                        session_data = await redis.get(f"session:{token}")
+                        await redis.aclose()
+                        if session_data:
+                            return await self.app(scope, receive, send)
+                except Exception:
+                    pass
 
         response = JSONResponse(
             status_code=status.HTTP_401_UNAUTHORIZED,

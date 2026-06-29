@@ -56,15 +56,58 @@ Images can be exported via two endpoints under `/api/v1/export/`:
 - **ZIP download** (`GET /export/project/{project_id}/zip`) — streams a ZIP archive organized by product and image type (scraped vs AI-generated), falling back to local storage when R2 is unreachable
 - **Google Drive** (`POST /export/project/{project_id}/drive-export`) — uploads to a structured Drive folder hierarchy using a service account
 
-### 6. Placeholder Reject Filter
+### 6. Image Hash Ban Mechanism
 
-Known-bad SHA256 hashes prevent non-product images from entering the pipeline:
+Operators can **ban** scraped image hashes directly from the dashboard. Banned hashes are:
 
+- **Persisted** in the `settings` table (key `banned_image_hashes`, JSON array) — survives worker restarts
+- **Synced** to Redis (`global_rejected_hashes` SET) on first worker Redis connection via `_sync_banned_hashes()`
+- **Enforced** by the downloader — any hash in the reject set is skipped before download
+
+**API Endpoints** (`/api/v1/assets/`):
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/ban` | Add hash to ban list |
+| `POST` | `/unban` | Remove hash from ban list |
+| `GET`  | `/banned-hashes` | List all banned hashes |
+
+**Dashboard UI**: Each scraped image thumbnail shows a red **Ban** button (on hover). Clicking it calls `POST /assets/ban` and shows a success toast. Banned images also display an "Image Banned" overlay.
+
+### 7. Low-Image Count Detection
+
+Products with **≤ 2 scraped images** are flagged with an `AlertTriangle` badge on the product detail page, indicating the scrape may be partial or failed.
+
+---
+
+## Dashboard (Next.js Frontend)
+
+The management UI is a Next.js 15 app at `dashboard/`:
+
+```bash
+cd dashboard
+npm install
+npm run dev        # http://localhost:3000
 ```
-a18efca9...  AliExpress 150×150 animated loading GIF
-```
 
-Add new hashes to `image_downloader._KNOWN_REJECTED_HASHES` or the `global_rejected_hashes` Redis set.
+In development without Docker, the dashboard proxies `/api/*` requests to `http://localhost:8000/api/*` (configurable via `NEXT_PUBLIC_API_HOST` or `API_HOST` in `.env.local`). The rewrite rules in `next.config.ts` handle this transparently.
+
+### Dashboard Features
+- **Product list** with status badges (scraped, generated, error)
+- **Product detail** — scraped image gallery (with ban buttons), generated images, timestamps, metadata
+- **Project view** — aggregate product cards with progress tracking
+- **Settings** — Scrapfly key management, product type presets, account settings
+- **Upload** — manual image upload (drag & drop)
+- **Admin** — system health, Scrapfly admin page
+- **Notifications** — real-time worker notifications (quota exhaustion, failures)
+
+---
+
+## API Reference
+
+The FastAPI backend exposes auto-generated docs:
+
+- **Swagger UI**: `http://localhost:8000/docs`
+- **ReDoc**: `http://localhost:8000/redoc`
 
 ---
 
@@ -75,6 +118,8 @@ Add new hashes to `image_downloader._KNOWN_REJECTED_HASHES` or the `global_rejec
 | 1 | **Backfill R2 URLs** | All | 5 legacy products exist in DB without R2 URLs | Write a one-off task to re-upload existing local assets to R2 |
 | 2 | **Drive Auth UX** | Settings | Service account upload requires file-based config | Add a web UI for Drive credential upload |
 | 3 | **Temu** | temu.com | CAPTCHA on all automated access | Implement realistic CAPTCHA mitigation — session reuse, rate limiting, or honest failure |
+| 4 | **Model Pricing Admin** | All | Generation pricing is seeded via code | Add a settings UI to view/edit model pricing, set per-customer credit multipliers |
+| 5 | **Cleanup Tasks** | System | `services/cleanup.py` and `tasks/cleanup.py` are new | Wire into a scheduled Celery beat or cron job |
 
 ---
 

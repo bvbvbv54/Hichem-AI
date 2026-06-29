@@ -69,8 +69,8 @@ export default function ProductsPage() {
   });
 
   const { data: stats } = useQuery({
-    queryKey: ["content-stats"],
-    queryFn: () => api.getContentStats(),
+    queryKey: ["content-stats", statusFilter, productSearch],
+    queryFn: () => api.getContentStats({ status: statusFilter || undefined, search: productSearch || undefined }),
     refetchInterval: tab === "products" ? 15000 : undefined,
   });
 

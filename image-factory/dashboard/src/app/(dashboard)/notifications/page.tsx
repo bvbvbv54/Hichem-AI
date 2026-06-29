@@ -110,7 +110,7 @@ export default function NotificationsPage() {
                     <p className={`text-sm ${!n.read ? "font-semibold" : ""}`}>{n.title}</p>
                     <p className="text-xs text-muted-foreground mt-0.5">{n.message}</p>
                     <p className="text-xs text-muted-foreground/60 mt-1">{formatDateTime(n.created_at)}</p>
-                    {(n.type === "scraping_finished" || n.type === "scraping_failed") && n.data?.product_id && (
+                    {n.data?.product_id && (
                       <Link
                         href={getProductDetailUrl(n.data.product_id)}
                         className="text-xs text-primary hover:underline mt-1 inline-block"
@@ -118,6 +118,20 @@ export default function NotificationsPage() {
                       >
                         View product →
                       </Link>
+                    )}
+                    {n.data?.batch_id && (
+                      <Link
+                        href={`/projects/${n.data.batch_id}`}
+                        className="text-xs text-primary hover:underline mt-1 ml-2 inline-block"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        View project →
+                      </Link>
+                    )}
+                    {n.data?.project_name && (
+                      <span className="text-xs text-muted-foreground mt-1 ml-2 inline-block">
+                        {n.data.project_name}
+                      </span>
                     )}
                   </div>
                   {!n.read && (

@@ -56,6 +56,7 @@ async def init_db() -> None:
                 from database.models.feature_cache import FeatureCache  # noqa
                 from database.models.correction_event import CorrectionEvent  # noqa
                 from database.models.learning_weight import LearningWeight  # noqa
+                from database.models.model_pricing import ModelPricing  # noqa
 
                 await conn.run_sync(Base.metadata.create_all)
             return
