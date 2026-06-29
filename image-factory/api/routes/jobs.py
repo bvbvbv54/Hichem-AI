@@ -4,10 +4,13 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
+from sqlalchemy import select, func
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.schemas.job import JobResponse, JobListResponse, JobStatusResponse, BatchJobResponse
-from api.dependencies import get_job_repo, get_asset_repo
+from api.dependencies import get_job_repo, get_asset_repo, get_session
 from database.repository import JobRepository, AssetRepository
+from database.models.product_link import ProductLink
 from models.enums import JobStatus
 from services.notifications import send_notification, NotificationLevel
 
@@ -45,6 +48,37 @@ def _job_to_response(job, batch_items: list[str] | None = None) -> JobResponse:
         assets=assets,
         batch_items=batch_items or [],
     )
+
+
+@router.get("/jobs/active", summary="List active scraping jobs with progress")
+async def list_active_jobs(
+    session: AsyncSession = Depends(get_session),
+):
+    active_statuses = ["pending", "queued", "scraping"]
+    result = await session.execute(
+        select(ProductLink.project_id).where(ProductLink.status.in_(active_statuses)).distinct()
+    )
+    active_project_ids = [row[0] for row in result.all()]
+
+    projects = []
+    for pid in active_project_ids:
+        all_links = await session.execute(
+            select(ProductLink.status).where(ProductLink.project_id == pid)
+        )
+        statuses = [row[0] for row in all_links.all()]
+        total = len(statuses)
+        completed = sum(1 for s in statuses if s in ("scraped", "completed"))
+        failed = sum(1 for s in statuses if s in ("failed", "error"))
+        projects.append({
+            "project_id": pid,
+            "project_name": pid,
+            "total_products": total,
+            "completed_count": completed,
+            "failed_count": failed,
+            "progress_pct": round((completed + failed) / total * 100, 1) if total > 0 else 0,
+        })
+
+    return {"active_projects": projects, "total_active": len(projects)}
 
 
 @router.get("/jobs", response_model=JobListResponse, summary="List all jobs")

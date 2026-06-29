@@ -71,18 +71,16 @@ class ImageDownloader:
             redis_conn = await self._get_redis()
             response = await self.http_client.get(url)
             if response.status_code != 200:
-                logger.warning("download_failed", url=url, status=response.status_code)
                 return None, None
             data = response.content
+
             if len(data) < MIN_SIZE:
-                logger.warning("image_too_small", url=url, size=len(data))
                 return None, None
             if len(data) > MAX_SIZE:
-                logger.warning("image_too_large", url=url, size=len(data))
                 return None, None
+
             mime = response.headers.get("content-type", "").lower().split(";")[0].strip()
             if mime and mime not in VALID_MIME_TYPES:
-                logger.warning("invalid_mime_type", url=url, mime=mime)
                 return None, None
             try:
                 img = Image.open(io.BytesIO(data))
@@ -90,10 +88,8 @@ class ImageDownloader:
                 img = Image.open(io.BytesIO(data))
                 img.load()
                 if img.width < 100 or img.height < 100:
-                    logger.warning("image_too_small_dimensions", url=url, dims=(img.width, img.height))
                     return None, None
             except Exception as exc:
-                logger.warning("image_verification_failed", url=url, error=str(exc))
                 return None, None
 
             sha256 = hashlib.sha256(data).hexdigest()
@@ -101,7 +97,6 @@ class ImageDownloader:
 
             # Known-bad hash reject (placeholder/loading assets)
             if sha256 in _KNOWN_REJECTED_HASHES:
-                logger.info("known_rejected_hash_skipped", url=url, sha256=sha256)
                 return None, None
             try:
                 is_known_rejected = await redis_conn.sismember(GLOBAL_REJECTED_HASHES_SET, sha256)

@@ -19,7 +19,7 @@ from database.models.product_link import ProductLink
 from database.repository import JobRepository, AssetRepository
 from configs.settings import settings
 from configs.logging import get_logger
-from services.translation_service import batch_translate, contains_chinese
+
 
 logger = get_logger(__name__)
 
@@ -57,12 +57,9 @@ async def list_content_products(
     result = await session.execute(query)
     links = list(result.scalars().all())
 
-    product_names = [link.product_name or "" for link in links]
-    translated = await batch_translate(product_names) if any(contains_chinese(n) for n in product_names) else {}
     for link in links:
-        name = link.product_name or ""
-        if name in translated:
-            link.product_name = translated[name]
+        if not link.display_title:
+            link.display_title = link.product_name or ""
 
     return ContentListResponse(
         products=[ProductLinkSchema.model_validate(link) for link in links],
@@ -223,12 +220,6 @@ async def get_product_detail(
             "progress": job.progress,
             "error_message": job.error_message or "",
         })
-
-    # Translate product name if it contains Chinese
-    if link.product_name and contains_chinese(link.product_name):
-        translated_map = await batch_translate([link.product_name])
-        if link.product_name in translated_map:
-            link.product_name = translated_map[link.product_name]
 
     pl_meta = link.meta or {}
     ref_ids = pl_meta.get("reference_selected_ids", [])

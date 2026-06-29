@@ -17,7 +17,7 @@ from database.models.asset import Asset
 from database.models.job import Job
 from database.models.product_link import ProductLink
 from configs.logging import get_logger
-from services.translation_service import batch_translate, contains_chinese
+
 
 logger = get_logger(__name__)
 
@@ -178,10 +178,6 @@ async def get_project_products(
 
     products = []
 
-    # Batch translate all Chinese product names in one call
-    product_names = [link.product_name or "" for link in links]
-    translated = await batch_translate(product_names) if any(contains_chinese(n) for n in product_names) else {}
-
     for link in links:
         images = []
         seen_paths: set[str] = set()
@@ -194,10 +190,17 @@ async def get_project_products(
                     continue
                 if fp:
                     seen_paths.add(fp)
+                meta = a.meta or {}
+                r2_url = meta.get("r2_url", "") or ""
+                r2_key = meta.get("r2_key", "") or ""
                 images.append({
                     "id": a.id,
                     "filename": a.filename,
                     "file_path": fp,
+                    "r2_url": r2_url,
+                    "r2_key": r2_key,
+                    "width": a.width,
+                    "height": a.height,
                     "created_at": a.created_at.isoformat() if a.created_at else "",
                 })
             job_result = await session.execute(select(Job).where(Job.id == link.job_id))
@@ -213,16 +216,21 @@ async def get_project_products(
                         "id": img_id,
                         "filename": Path(img_path).name,
                         "file_path": img_path,
+                        "r2_url": "",
+                        "r2_key": "",
+                        "width": 0,
+                        "height": 0,
                         "created_at": job.completed_at.isoformat() if job.completed_at else "",
                     })
 
-        name = link.product_name or ""
-        title = translated.get(name, name)
+        title = link.display_title or link.product_name or ""
         products.append({
             "id": link.id,
             "url": link.url or "",
             "status": link.status,
-            "generated_title": title,
+            "display_title": title,
+            "source_title": link.source_title or link.product_name or "",
+            "source_language": link.source_language or "",
             "generated_description": "",
             "images": images,
             "scraped_image_count": link.scraped_image_count or 0,

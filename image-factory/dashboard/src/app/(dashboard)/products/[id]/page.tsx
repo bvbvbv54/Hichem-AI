@@ -11,7 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
 import {
-  ArrowLeft, ExternalLink, Image, CheckCircle2, XCircle, Clock, AlertTriangle, RefreshCw, Calendar, Sparkles, Loader2, DollarSign, Ban,
+  ArrowLeft, ExternalLink, Image, CheckCircle2, XCircle, Clock, AlertTriangle, RefreshCw, Calendar, Sparkles, Loader2, DollarSign, Ban, ChevronRight,
 } from "lucide-react";
 import Link from "next/link";
 import { useState, useCallback } from "react";
@@ -184,13 +184,19 @@ export default function ProductDetailPage() {
           </Link>
           <div>
             <h1 className="text-2xl font-bold tracking-tight">
-              {product.product_name || "Unknown Product"}
+              {product.display_title || product.product_name || (product.url ? product.url.substring(0, 80) + "..." : "Unknown Product")}
             </h1>
             <a href={product.url} target="_blank" rel="noopener noreferrer"
               className="text-sm text-muted-foreground hover:text-primary flex items-center gap-1">
-              {product.url?.substring(0, 80)}...
+              {product.url ? (product.url.length > 80 ? product.url.substring(0, 80) + "..." : product.url) : ""}
               <ExternalLink className="h-3 w-3" />
             </a>
+            {product.error_message && (
+              <div className="flex items-center gap-2 mt-2 text-sm text-red-600 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-800/30 rounded-md px-3 py-2">
+                <AlertTriangle className="h-4 w-4 shrink-0" />
+                <span>Scraping failed: {product.error_message}</span>
+              </div>
+            )}
             {/* Real persisted date */}
             <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
               {createdDate && (
@@ -212,6 +218,36 @@ export default function ProductDetailPage() {
           {product.status}
         </Badge>
       </div>
+
+      {/* Original Source Details — collapsed by default */}
+      {(product.source_title || product.source_language) && (
+        <details className="group border rounded-lg p-3">
+          <summary className="cursor-pointer text-sm font-medium text-muted-foreground hover:text-foreground flex items-center gap-2">
+            <ChevronRight className="h-4 w-4 transition-transform group-open:rotate-90" />
+            Original Source Details
+          </summary>
+          <div className="mt-3 space-y-2 text-sm pl-6">
+            {product.source_title && (
+              <div>
+                <span className="text-muted-foreground">Original title:</span>
+                <p className="font-medium">{product.source_title}</p>
+              </div>
+            )}
+            {product.source_language && (
+              <div>
+                <span className="text-muted-foreground">Language:</span>
+                <span className="ml-1">{product.source_language}</span>
+              </div>
+            )}
+            {product.url && (
+              <div>
+                <span className="text-muted-foreground">URL:</span>
+                <a href={product.url} target="_blank" rel="noopener noreferrer" className="ml-1 text-primary hover:underline break-all">{product.url}</a>
+              </div>
+            )}
+          </div>
+        </details>
+      )}
 
       {/* Summary stats */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -264,6 +300,27 @@ export default function ProductDetailPage() {
               ))}
             </div>
           )}
+        </CardContent>
+      </Card>
+
+      {/* Reference Selection */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm font-medium flex items-center gap-2">
+            <Sparkles className="h-4 w-4 text-primary" />
+            Reference Selection
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground mb-3">
+            Select reference images to guide AI generation. Choose 3–5 images as visual references.
+          </p>
+          <Link href={`/products/${productId}/adapt-ref`}>
+            <Button variant="default" size="sm">
+              <Sparkles className="h-4 w-4 mr-1.5" />
+              Continue to Reference Selection
+            </Button>
+          </Link>
         </CardContent>
       </Card>
 

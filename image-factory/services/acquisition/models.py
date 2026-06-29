@@ -35,6 +35,7 @@ class AcquisitionResult:
     url: str
     success: bool
     image_paths: list[str] = field(default_factory=list)
+    image_urls: list[str] = field(default_factory=list)
     image_hashes: list[str] = field(default_factory=list)
     page_title: str = ""
     page_description: str = ""

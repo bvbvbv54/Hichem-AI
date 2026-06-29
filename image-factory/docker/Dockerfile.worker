@@ -36,4 +36,4 @@ RUN playwright install chromium 2>&1 && playwright install-deps chromium 2>&1 ||
 
 COPY . .
 
-CMD ["celery", "-A", "workers.celery_app", "worker", "-B", "--loglevel=info", "--concurrency=2"]
+CMD ["celery", "-A", "workers.celery_app", "worker", "-B", "--loglevel=info"]

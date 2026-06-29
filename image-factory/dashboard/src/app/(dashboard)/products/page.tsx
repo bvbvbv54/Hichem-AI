@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -12,10 +12,11 @@ import { Skeleton } from "@/components/ui/skeleton";
 import {
   Package, Search, ExternalLink, CheckCircle2, XCircle,
   Clock, AlertTriangle, SkipForward, Image, Grid3X3, List,
-  ImageIcon, Download, LayoutList,
+  ImageIcon, Download, LayoutList, Ban, Loader2,
 } from "lucide-react";
 import { formatDate, formatFileSize } from "@/lib/utils";
 import Link from "next/link";
+import { toast } from "@/hooks/use-toast";
 
 const statusColors: Record<string, string> = {
   pending: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200",
@@ -61,6 +62,9 @@ export default function ProductsPage() {
   const [view, setView] = useState<"grid" | "list">("grid");
   const [assetSearch, setAssetSearch] = useState("");
   const [projectFilter, setProjectFilter] = useState("all");
+  const [assetPage, setAssetPage] = useState(1);
+  const ASSET_PAGE_SIZE = 50;
+  const queryClient = useQueryClient();
 
   const { data: productData, isLoading: productsLoading } = useQuery({
     queryKey: ["content-products", productSearch, statusFilter],
@@ -80,19 +84,33 @@ export default function ProductsPage() {
   });
 
   const { data: assetsData, isLoading: assetsLoading } = useQuery({
-    queryKey: ["assets", assetSearch, projectFilter],
+    queryKey: ["assets", assetSearch, projectFilter, assetPage],
     queryFn: () =>
       api.listAssets({
         search: assetSearch || undefined,
         project_id: projectFilter !== "all" ? projectFilter : undefined,
-        limit: 100,
+        limit: ASSET_PAGE_SIZE,
+        offset: (assetPage - 1) * ASSET_PAGE_SIZE,
       }),
     enabled: tab === "assets",
+  });
+
+  const banMutation = useMutation({
+    mutationFn: (assetId: string) => api.banImageHash(assetId, assetId, ""),
+    onSuccess: () => {
+      toast({ title: "Image banned", description: "This image hash will be rejected in future scrapes." });
+      queryClient.invalidateQueries({ queryKey: ["assets"] });
+    },
+    onError: (err: any) => {
+      toast({ title: "Ban failed", description: err.message, variant: "destructive" });
+    },
   });
 
   const products = productData?.products ?? [];
   const total = productData?.total ?? 0;
   const assets = assetsData?.assets || [];
+  const assetTotal = assetsData?.total ?? 0;
+  const assetTotalPages = Math.ceil(assetTotal / ASSET_PAGE_SIZE);
   const projects = projectsData?.projects || [];
 
   return (
@@ -193,7 +211,7 @@ export default function ProductsPage() {
                         </div>
                         <div className="flex-1 min-w-0">
                           <div className="text-sm font-medium truncate">
-                            {product.product_name || product.url?.split("/").pop()?.replace(/-/g, " ") || "Unknown Product"}
+                            {product.display_title || product.product_name || product.url?.split("/").pop()?.replace(/-/g, " ") || "Unknown Product"}
                           </div>
                           <div className="text-xs text-muted-foreground truncate">
                             {product.url}
@@ -232,10 +250,10 @@ export default function ProductsPage() {
                 placeholder="Search assets..."
                 className="pl-9"
                 value={assetSearch}
-                onChange={(e) => setAssetSearch(e.target.value)}
+                onChange={(e) => { setAssetSearch(e.target.value); setAssetPage(1); }}
               />
             </div>
-            <Select value={projectFilter} onValueChange={setProjectFilter}>
+            <Select value={projectFilter} onValueChange={(v) => { setProjectFilter(v); setAssetPage(1); }}>
               <SelectTrigger className="w-48">
                 <SelectValue placeholder="All projects" />
               </SelectTrigger>
@@ -287,46 +305,86 @@ export default function ProductsPage() {
               </CardContent>
             </Card>
           ) : view === "grid" ? (
-            <div className="grid gap-4 grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
-              {assets.map((asset: any) => (
-                <Card key={asset.id} className="group overflow-hidden">
-                  <CardContent className="p-0">
-                    <div className="aspect-square bg-muted relative overflow-hidden">
-                      <img
-                        src={`/api/v1/assets/${asset.id}/file`}
-                        alt={asset.filename}
-                        className="h-full w-full object-cover transition-transform group-hover:scale-105"
-                      />
-                    </div>
-                    <div className="p-3 space-y-1">
-                      <p className="text-sm font-medium truncate">{asset.filename}</p>
-                      <div className="flex items-center justify-between text-xs text-muted-foreground">
-                        <span>{formatFileSize(asset.file_size)}</span>
-                        <span>{formatDate(asset.created_at)}</span>
+            <>
+              <div className="grid gap-4 grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
+                {assets.map((asset: any) => (
+                  <Card key={asset.id} className="group overflow-hidden">
+                    <CardContent className="p-0">
+                      <div className="aspect-square bg-muted relative overflow-hidden">
+                        <img
+                          src={`/api/v1/assets/${asset.id}/file`}
+                          alt={asset.filename}
+                          className="h-full w-full object-cover transition-transform group-hover:scale-105"
+                        />
+                        <button
+                          onClick={() => banMutation.mutate(asset.id)}
+                          disabled={banMutation.isPending}
+                          className="absolute top-1 right-1 h-6 w-6 rounded-full bg-red-600/80 hover:bg-red-600 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                          title="Ban this image (reject hash so it won't be scraped again)"
+                        >
+                          {banMutation.isPending ? <Loader2 className="h-3 w-3 text-white animate-spin" /> : <Ban className="h-3 w-3 text-white" />}
+                        </button>
                       </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
+                      <div className="p-3 space-y-1">
+                        <p className="text-sm font-medium truncate">{asset.filename}</p>
+                        <div className="flex items-center justify-between text-xs text-muted-foreground">
+                          <span>{formatFileSize(asset.file_size)}</span>
+                          <span>{formatDate(asset.created_at)}</span>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+              {assetTotalPages > 1 && (
+                <div className="flex items-center justify-between pt-2">
+                  <p className="text-sm text-muted-foreground">{assetTotal} total images</p>
+                  <div className="flex items-center gap-2">
+                    <Button variant="outline" size="sm" disabled={assetPage <= 1} onClick={() => setAssetPage(assetPage - 1)}>Previous</Button>
+                    <span className="text-sm text-muted-foreground">Page {assetPage} of {assetTotalPages}</span>
+                    <Button variant="outline" size="sm" disabled={assetPage >= assetTotalPages} onClick={() => setAssetPage(assetPage + 1)}>Next</Button>
+                  </div>
+                </div>
+              )}
+            </>
           ) : (
-            <div className="space-y-2">
-              {assets.map((asset: any) => (
-                <Card key={asset.id}>
-                  <CardContent className="p-4 flex items-center gap-4">
-                    <div className="h-16 w-16 rounded bg-muted overflow-hidden shrink-0">
-                      <img src={`/api/v1/assets/${asset.id}/file`} alt="" className="h-full w-full object-cover" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="font-medium truncate">{asset.filename}</p>
-                      <p className="text-sm text-muted-foreground">{formatDate(asset.created_at)}</p>
-                    </div>
-                    <div className="text-sm text-muted-foreground">{formatFileSize(asset.file_size)}</div>
-                    <Button variant="outline" size="sm"><Download className="h-3 w-3" /></Button>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
+            <>
+              <div className="space-y-2">
+                {assets.map((asset: any) => (
+                  <Card key={asset.id} className="group">
+                    <CardContent className="p-4 flex items-center gap-4">
+                      <div className="h-16 w-16 rounded bg-muted overflow-hidden shrink-0 relative">
+                        <img src={`/api/v1/assets/${asset.id}/file`} alt="" className="h-full w-full object-cover" />
+                        <button
+                          onClick={() => banMutation.mutate(asset.id)}
+                          disabled={banMutation.isPending}
+                          className="absolute top-0.5 right-0.5 h-5 w-5 rounded-full bg-red-600/80 hover:bg-red-600 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                          title="Ban this image"
+                        >
+                          <Ban className="h-2.5 w-2.5 text-white" />
+                        </button>
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium truncate">{asset.filename}</p>
+                        <p className="text-sm text-muted-foreground">{formatDate(asset.created_at)}</p>
+                      </div>
+                      <div className="text-sm text-muted-foreground">{formatFileSize(asset.file_size)}</div>
+                      <Button variant="outline" size="sm"><Download className="h-3 w-3" /></Button>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+              {assetTotalPages > 1 && (
+                <div className="flex items-center justify-between pt-2">
+                  <p className="text-sm text-muted-foreground">{assetTotal} total images</p>
+                  <div className="flex items-center gap-2">
+                    <Button variant="outline" size="sm" disabled={assetPage <= 1} onClick={() => setAssetPage(assetPage - 1)}>Previous</Button>
+                    <span className="text-sm text-muted-foreground">Page {assetPage} of {assetTotalPages}</span>
+                    <Button variant="outline" size="sm" disabled={assetPage >= assetTotalPages} onClick={() => setAssetPage(assetPage + 1)}>Next</Button>
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </>
       )}

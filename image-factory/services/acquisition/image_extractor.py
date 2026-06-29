@@ -1182,19 +1182,25 @@ def _is_aliexpress_image(url: str) -> bool:
 def _extract_aliexpress_gallery(html: str, page_url: str) -> list[str]:
     seen: set[str] = set()
     urls: list[str] = []
+    # [DEBUG] per-source counters
+    _src_counts: dict[str, int] = {}
 
     # Strategy 1: JSON-LD (most authoritative)
     soup = BeautifulSoup(html, "lxml")
+    _src_counts["json_ld"] = 0
     for u in _extract_json_ld_images(soup):
         abs_url = urljoin(page_url, u)
         if _is_aliexpress_image(abs_url) and abs_url not in seen:
             seen.add(abs_url)
             urls.append(abs_url)
+            _src_counts["json_ld"] += 1
 
     if urls:
+        logger.info("ae_selector_src", source="json_ld", count=len(urls), url=page_url)
         return urls
 
     # Strategy 2: Embedded JSON variables (AE-specific)
+    _src_counts["embedded_json"] = 0
     for var_name in _ALIEXPRESS_JSON_VARS:
         data = _extract_json_var(html, var_name)
         if data:
@@ -1212,6 +1218,7 @@ def _extract_aliexpress_gallery(html: str, page_url: str) -> list[str]:
                         if _is_aliexpress_image(abs_url) and abs_url not in seen:
                             seen.add(abs_url)
                             urls.append(abs_url)
+                            _src_counts["embedded_json"] += 1
                     elif isinstance(item, dict):
                         for key in ("url", "src", "imageUrl", "imgUrl",
                                     "original", "fullSizeImageUrl",
@@ -1222,6 +1229,7 @@ def _extract_aliexpress_gallery(html: str, page_url: str) -> list[str]:
                                 if _is_aliexpress_image(abs_url) and abs_url not in seen:
                                     seen.add(abs_url)
                                     urls.append(abs_url)
+                                    _src_counts["embedded_json"] += 1
                         # Nested: skuPropertyValues within skuBase
                         for sub in item.get("skuPropertyValues", []):
                             path_val = sub.get("skuPropertyImagePath", "")
@@ -1230,24 +1238,30 @@ def _extract_aliexpress_gallery(html: str, page_url: str) -> list[str]:
                                 if _is_aliexpress_image(abs_url) and abs_url not in seen:
                                     seen.add(abs_url)
                                     urls.append(abs_url)
+                                    _src_counts["embedded_json"] += 1
 
     if urls:
+        logger.info("ae_selector_src", source="embedded_json", count=len(urls), url=page_url)
         return urls
 
     # Strategy 2b: Next.js __NEXT_DATA__ script (modern AliExpress)
+    _src_counts["next_data"] = 0
     next_data = soup.find("script", id="__NEXT_DATA__", type="application/json")
     if next_data and next_data.string:
         try:
             nd = json.loads(next_data.string)
             nd_urls = _walk_json_for_ae_images(nd, page_url, seen)
             urls.extend(nd_urls)
+            _src_counts["next_data"] = len(nd_urls)
         except (json.JSONDecodeError, Exception):
             pass
 
     if urls:
+        logger.info("ae_selector_src", source="next_data", count=len(urls), url=page_url)
         return urls
 
     # Strategy 3: DOM gallery selectors
+    _src_counts["gallery_dom"] = 0
     for selector in _ALIEXPRESS_GALLERY_SELECTORS:
         for el in soup.select(selector):
             for attr in ("src", "data-src", "data-lazyload", "data-original"):
@@ -1257,6 +1271,7 @@ def _extract_aliexpress_gallery(html: str, page_url: str) -> list[str]:
                     if _is_aliexpress_image(abs_url) and abs_url not in seen:
                         seen.add(abs_url)
                         urls.append(abs_url)
+                        _src_counts["gallery_dom"] += 1
             data_imgs = el.get("data-imgs", "")
             if data_imgs and data_imgs.strip().startswith("["):
                 try:
@@ -1270,13 +1285,16 @@ def _extract_aliexpress_gallery(html: str, page_url: str) -> list[str]:
                                     if _is_aliexpress_image(abs_url) and abs_url not in seen:
                                         seen.add(abs_url)
                                         urls.append(abs_url)
+                                        _src_counts["gallery_dom"] += 1
                 except (json.JSONDecodeError, Exception):
                     pass
 
     if urls:
+        logger.info("ae_selector_src", source="gallery_dom", count=len(urls), url=page_url)
         return urls
 
     # Strategy 4: CDN regex — AliExpress uses ae0[0-9].alicdn / ae-pic-a1.aliexpress-media.com
+    _src_counts["cdn_regex"] = 0
     ae_cdn_re = re.compile(
         r"https?://[^\"'\s>]*(?:ae0\d|ae-pic-a1|ae[0-9]{2})[^\"'\s>]*(?:alicdn|aliexpress-media)[^\"'\s>]*\.(?:jpg|jpeg|png|webp)",
         re.I,
@@ -1286,17 +1304,30 @@ def _extract_aliexpress_gallery(html: str, page_url: str) -> list[str]:
         if _is_aliexpress_image(u) and u not in seen:
             seen.add(u)
             urls.append(u)
+            _src_counts["cdn_regex"] += 1
 
     if urls:
+        logger.info("ae_selector_src", source="cdn_regex", count=len(urls), url=page_url)
         return urls
 
     # Strategy 5: Any alicdn URL on AliExpress pages
+    _src_counts["fallback_alicdn"] = 0
     for m in re.finditer(r"https?://[^\"'\s>]*alicdn[^\"'\s>]*\.(?:jpg|jpeg|png|webp)", html, re.I):
         u = m.group(0)
         if _is_aliexpress_image(u) and u not in seen:
             seen.add(u)
             urls.append(u)
+            _src_counts["fallback_alicdn"] += 1
 
+    logger.info("ae_selector_src",
+                source="all_failed",
+                json_ld=_src_counts.get("json_ld", 0),
+                embedded_json=_src_counts.get("embedded_json", 0),
+                next_data=_src_counts.get("next_data", 0),
+                gallery_dom=_src_counts.get("gallery_dom", 0),
+                cdn_regex=_src_counts.get("cdn_regex", 0),
+                fallback_alicdn=_src_counts.get("fallback_alicdn", 0),
+                url=page_url)
     return urls
 
 
@@ -1318,9 +1349,10 @@ def is_plausible_product_page(html: str, page_url: str) -> tuple[bool, str]:
         if kw in title_lower:
             return False, f"Page appears to be an error/not-found page — title contains '{kw}'"
 
-    # Meaningful product title
+    # Meaningful product title — some SPAs render H1 client-side, fall back to <title>
     if not h1 or len(h1) < 5:
-        return False, f"No meaningful product title found (H1='{h1[:50]}')"
+        if not title or len(title) < 5 or any(kw in title.lower() for kw in not_found_kw):
+            return False, f"No meaningful product title found (H1='{h1[:50]}', title='{title[:50]}')"
 
     # Body has actual content
     body = soup.find("body")

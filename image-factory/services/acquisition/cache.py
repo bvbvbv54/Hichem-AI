@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import tempfile
 from pathlib import Path
+from urllib.parse import urlparse
 
 import redis.asyncio as redis_async
 
@@ -14,22 +16,31 @@ logger = get_logger(__name__)
 
 CACHE_PREFIX = "img_cache:"
 URL_CACHE_PREFIX = "img_url_cache:"
+R2_URL_CACHE_PREFIX = "r2_url_cache:"
 
 
 class ImageCache:
     def __init__(self, downloader: ImageDownloader) -> None:
         self.downloader = downloader
         self._redis: redis_async.Redis | None = None
+        self._r2 = None
 
     async def _get_redis(self) -> redis_async.Redis:
         if self._redis is None:
             self._redis = await redis_async.from_url(settings.redis_url)
         return self._redis
 
+    async def _get_r2(self):
+        if self._r2 is None:
+            from services.storage.r2 import get_r2_storage
+            self._r2 = get_r2_storage()
+        return self._r2
+
     async def get_or_download(self, url: str, job_id: str) -> tuple[str | None, bool]:
         redis_conn = await self._get_redis()
         url_hash = hashlib.sha256(url.encode()).hexdigest()
 
+        # Check Redis local cache first
         content_hash = await redis_conn.get(f"{URL_CACHE_PREFIX}{url_hash}")
         if content_hash:
             sha_key = content_hash.decode()
@@ -43,6 +54,31 @@ class ImageCache:
                 await redis_conn.delete(f"{URL_CACHE_PREFIX}{url_hash}")
                 await redis_conn.delete(f"{CACHE_PREFIX}{sha_key}")
 
+        # Check R2 persistent cache
+        try:
+            r2 = await self._get_r2()
+            r2_presigned = await r2.get_cached_r2_url(url)
+            if r2_presigned:
+                ext = Path(urlparse(url).path).suffix or ".jpg"
+                tmp = Path(tempfile.mktemp(suffix=ext))
+                try:
+                    async with HardenedHTTPClient() as client:
+                        resp = await client.get(r2_presigned, follow_redirects=True)
+                        if resp.status_code == 200:
+                            tmp.write_bytes(resp.content)
+                            sha256 = hashlib.sha256(resp.content).hexdigest()
+                            await redis_conn.set(f"{URL_CACHE_PREFIX}{url_hash}", sha256)
+                            await redis_conn.set(f"{CACHE_PREFIX}{sha256}", str(tmp))
+                            logger.info("r2_cache_hit", url=url, r2_key=r2_presigned)
+                            return str(tmp), True
+                except Exception as e:
+                    logger.warning("r2_cache_download_failed", url=url, error=str(e))
+                    if tmp.exists():
+                        tmp.unlink()
+        except Exception as e:
+            logger.debug("r2_cache_check_skipped", url=url, error=str(e))
+
+        # Download from web
         local_path, sha256 = await self.downloader.download(url, job_id)
         if local_path and sha256:
             await redis_conn.set(f"{URL_CACHE_PREFIX}{url_hash}", sha256)

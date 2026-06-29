@@ -102,7 +102,7 @@ class Settings(BaseSettings):
     # Celery
     celery_broker_url: str = "redis://redis:6379/1"
     celery_result_backend: str = "redis://redis:6379/2"
-    celery_worker_concurrency: int = 2
+    celery_worker_concurrency: int = 4
     celery_task_acks_late: bool = True
     celery_task_reject_on_worker_lost: bool = True
     celery_task_retry_max: int = 3
@@ -124,7 +124,7 @@ class Settings(BaseSettings):
     proxy_test_url: str = "http://httpbin.org/ip"
     request_delay_min: float = 2.0
     request_delay_max: float = 5.0
-    request_delay_enabled: bool = True
+    request_delay_enabled: bool = False
 
     extractor_default_language: str = "en"
     extractor_user_agent: str = (

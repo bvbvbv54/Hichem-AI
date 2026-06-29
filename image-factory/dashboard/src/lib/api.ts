@@ -216,6 +216,8 @@ export const api = {
     ),
 
   getJob: (id: string) => request<any>(`/jobs/${id}`),
+  getActiveScrapingJobs: () =>
+    request<{ active_projects: any[]; total_active: number }>("/jobs/active"),
   retryJob: (id: string) =>
     request<any>(`/jobs/${id}/retry`, { method: "POST" }),
   cancelJob: (id: string) =>

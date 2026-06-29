@@ -4,7 +4,6 @@ import asyncio
 import hashlib
 import json
 import math
-import re
 import time
 import uuid
 from datetime import datetime
@@ -138,14 +137,11 @@ async def _publish_batch_progress(batch_id: str, progress_key: str, redis_conn: 
     ))
 
 
-def _sanitize_filename(name: str) -> str:
-    name = re.sub(r'[<>:"/\\|?*]', "_", name)
-    name = re.sub(r'\s+', "_", name)
-    return name.strip("._ ")[:100] or "product"
+from services.utils import sanitize_filename
 
 
 def _resolve_output_dir(product_name: str) -> Path:
-    name_dir = _sanitize_filename(product_name) if product_name else "product"
+    name_dir = sanitize_filename(product_name, max_length=100) if product_name else "product"
     base = settings.storage_path
     user_dir = settings.google_drive_root_folder
     if user_dir:
@@ -248,7 +244,21 @@ async def _execute_product_pipeline(self: Any, job_id: str, url: str, project_na
             product_name = acq_result.page_title or Path(urlparse(url).path).stem.replace("-", " ").replace("_", " ").title() or url
             product_description = acq_result.page_description
 
-            await _update_product_link_status(url, "scraped", product_name=product_name)
+            from services.translation_service import detect_language, needs_translation, translate_text
+            source_title = product_name
+            source_language = detect_language(source_title)
+            if needs_translation(source_title):
+                display_title = await translate_text(source_title)
+            else:
+                display_title = source_title
+
+            await _update_product_link_status(
+                url, "scraped",
+                product_name=product_name,
+                display_title=display_title,
+                source_title=source_title,
+                source_language=source_language,
+            )
 
             await estimator.record_stage(job_id, "acquisition", time.monotonic() - stage_start)
 
@@ -277,7 +287,7 @@ async def _execute_product_pipeline(self: Any, job_id: str, url: str, project_na
             product_link_id = await _get_product_link_id(url)
             try:
                 r2 = get_r2_storage()
-                for sp in saved_paths:
+                for idx, sp in enumerate(saved_paths):
                     sp_path = Path(sp)
                     if not sp_path.exists():
                         continue
@@ -288,6 +298,12 @@ async def _execute_product_pipeline(self: Any, job_id: str, url: str, project_na
                         category="scraped",
                     )
                     r2_results.append(r2_result)
+                    # Register URL→R2 key cache for future scrapes
+                    if idx < len(acq_result.image_urls):
+                        try:
+                            await r2.register_url_cache(acq_result.image_urls[idx], r2_result["key"])
+                        except Exception as cache_err:
+                            logger.debug("r2_cache_register_skipped", error=str(cache_err))
                 logger.info("r2_scraped_uploaded", product=product_name, count=len(r2_results))
             except Exception as r2_err:
                 logger.warning("r2_scraped_upload_failed", error=str(r2_err))
@@ -437,26 +453,8 @@ async def _execute_product_pipeline(self: Any, job_id: str, url: str, project_na
                 },
             ))
 
-            # 11C.2: Link target controlled by getProductDetailUrl() in dashboard/src/lib/utils.ts
-            product_link_id = await _get_product_link_id(url)
-            if product_link_id:
-                await send_notification(
-                    user_id="",
-                    title="Scraping Complete",
-                    message=f"Product '{product_name}' finished scraping — ready for validation",
-                    event_type="scraping_finished",
-                    level=NotificationLevel.SUCCESS,
-                    project_id=project_name,
-                    run_id=job_id,
-                    data={
-                        "product_id": product_link_id,
-                        "product_name": product_name,
-                        "url": url,
-                        "job_id": job_id,
-                        "project_name": project_name,
-                        "batch_id": parent_batch_id or "",
-                    },
-                )
+            link_project_id = await _get_product_link_project_id(url) or project_name
+            await _check_project_completion(link_project_id, project_name)
 
             if parent_batch_id:
                 track_key = f"batch:{parent_batch_id}:track"
@@ -502,27 +500,8 @@ async def _execute_product_pipeline(self: Any, job_id: str, url: str, project_na
 
             await _mark_job_failed(job_id, failure_detail, failure_type)
 
-            # 11C.2: Link target controlled by getProductDetailUrl() in dashboard/src/lib/utils.ts
-            product_link_id = await _get_product_link_id(url)
-            if product_link_id:
-                await send_notification(
-                    user_id="",
-                    title="Scraping Failed",
-                    message=failure_detail or str(exc),
-                    event_type="scraping_failed",
-                    level=NotificationLevel.ERROR,
-                    project_id=project_name,
-                    run_id=job_id,
-                    data={
-                        "product_id": product_link_id,
-                        "url": url,
-                        "job_id": job_id,
-                        "failure_type": failure_type or "unknown",
-                        "failure_detail": failure_detail or str(exc),
-                        "project_name": project_name,
-                        "batch_id": parent_batch_id or "",
-                    },
-                )
+            link_project_id = await _get_product_link_project_id(url) or project_name
+            await _check_project_completion(link_project_id, project_name)
 
             if parent_batch_id:
                 track_key = f"batch:{parent_batch_id}:track"
@@ -619,6 +598,93 @@ async def _update_job_status(job_id: str, status: JobStatus, **extra):
     async with async_session() as session:
         repo = JobRepository(session)
         await repo.update_status(job_id, status, **extra)
+
+
+async def _check_project_completion(project_id: str, project_name: str):
+    """Check if all products in a project are in terminal states and send notification if so."""
+    if not project_id:
+        return
+    try:
+        async with async_session() as session:
+            from sqlalchemy import func as sa_func
+            total_result = await session.execute(
+                select(sa_func.count(ProductLink.id)).where(ProductLink.project_id == project_id)
+            )
+            total = total_result.scalar() or 0
+            if total == 0:
+                return
+
+            terminal_result = await session.execute(
+                select(sa_func.count(ProductLink.id)).where(
+                    ProductLink.project_id == project_id,
+                    ProductLink.status.in_(["scraped", "completed", "failed", "error", "skipped"])
+                )
+            )
+            terminal = terminal_result.scalar() or 0
+
+            if terminal < total:
+                halfway = terminal >= total / 2
+                if halfway:
+                    await send_notification(
+                        user_id="",
+                        title="Project Scraping Progress",
+                        message=f"Project '{project_name}' is {terminal}/{total} products scraped ({int(terminal/total*100)}%)",
+                        event_type="scraping_progress",
+                        level=NotificationLevel.INFO,
+                        project_id=project_id,
+                        data={
+                            "project_id": project_id,
+                            "project_name": project_name,
+                            "total": total,
+                            "completed": terminal,
+                            "progress_pct": int(terminal / total * 100),
+                        },
+                    )
+                return
+
+            scraped_result = await session.execute(
+                select(sa_func.count(ProductLink.id)).where(
+                    ProductLink.project_id == project_id,
+                    ProductLink.status.in_(["scraped", "completed"])
+                )
+            )
+            scraped_count = scraped_result.scalar() or 0
+            failed_result = await session.execute(
+                select(sa_func.count(ProductLink.id)).where(
+                    ProductLink.project_id == project_id,
+                    ProductLink.status.in_(["failed", "error"])
+                )
+            )
+            failed_count = failed_result.scalar() or 0
+
+            await send_notification(
+                user_id="",
+                title="Project Scraping Complete",
+                message=f"Project '{project_name}' finished scraping — {scraped_count} succeeded, {failed_count} failed",
+                event_type="project_completed",
+                level=NotificationLevel.SUCCESS if failed_count == 0 else NotificationLevel.WARNING,
+                project_id=project_id,
+                data={
+                    "project_id": project_id,
+                    "project_name": project_name,
+                    "total": total,
+                    "succeeded": scraped_count,
+                    "failed": failed_count,
+                },
+            )
+    except Exception as e:
+        logger.warning("project_completion_check_failed", project_id=project_id, error=str(e))
+
+
+async def _get_product_link_project_id(url: str) -> str:
+    try:
+        async with async_session() as session:
+            url_hash = hashlib.sha256(url.encode()).hexdigest()
+            result = await session.execute(select(ProductLink.project_id).where(ProductLink.url_hash == url_hash))
+            row = result.one_or_none()
+            return row[0] if row else ""
+    except Exception:
+        return ""
 
 
 async def _get_product_link_id(url: str) -> str:

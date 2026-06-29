@@ -185,6 +185,83 @@ class R2Storage:
         return local
 
 
+    R2_URL_CACHE_PREFIX = "r2_url_cache:"
+
+    async def register_url_cache(self, image_url: str, r2_key: str) -> None:
+        import hashlib
+        import json
+        import redis.asyncio as redis_async
+
+        url_hash = hashlib.sha256(image_url.encode()).hexdigest()
+        cache_key = f"cache/r2_url/{url_hash}.json"
+        payload = json.dumps({"r2_key": r2_key, "url": image_url})
+
+        def _upload():
+            import io
+            self._client.put_object(
+                Bucket=R2_BUCKET,
+                Key=cache_key,
+                Body=payload.encode(),
+                ContentType="application/json",
+            )
+
+        try:
+            await asyncio.to_thread(_upload)
+        except Exception as e:
+            logger.warning("r2_cache_register_failed", url=image_url, error=str(e))
+
+        try:
+            redis_conn = await redis_async.from_url(settings.redis_url)
+            await redis_conn.set(f"{self.R2_URL_CACHE_PREFIX}{url_hash}", r2_key)
+            await redis_conn.aclose()
+        except Exception as e:
+            logger.warning("r2_cache_redis_failed", url=image_url, error=str(e))
+
+    async def get_cached_r2_url(self, image_url: str) -> str | None:
+        import hashlib
+        import json
+        import redis.asyncio as redis_async
+
+        url_hash = hashlib.sha256(image_url.encode()).hexdigest()
+
+        try:
+            redis_conn = await redis_async.from_url(settings.redis_url)
+            r2_key = await redis_conn.get(f"{self.R2_URL_CACHE_PREFIX}{url_hash}")
+            if r2_key:
+                r2_key = r2_key.decode()
+                exists = await self.file_exists(r2_key)
+                if exists:
+                    await redis_conn.aclose()
+                    return self._public_url(r2_key)
+            await redis_conn.aclose()
+        except Exception:
+            pass
+
+        try:
+            cache_key = f"cache/r2_url/{url_hash}.json"
+
+            def _get():
+                obj = self._client.get_object(Bucket=R2_BUCKET, Key=cache_key)
+                return obj["Body"].read().decode()
+
+            payload = await asyncio.to_thread(_get)
+            data = json.loads(payload)
+            r2_key = data["r2_key"]
+            exists = await self.file_exists(r2_key)
+            if exists:
+                try:
+                    redis_conn = await redis_async.from_url(settings.redis_url)
+                    await redis_conn.set(f"{self.R2_URL_CACHE_PREFIX}{url_hash}", r2_key)
+                    await redis_conn.aclose()
+                except Exception:
+                    pass
+                return self._public_url(r2_key)
+        except Exception:
+            pass
+
+        return None
+
+
 _r2_storage: R2Storage | None = None
 
 

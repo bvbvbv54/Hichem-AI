@@ -183,6 +183,7 @@ export interface Notification {
     | "processing_started"
     | "processing_finished"
     | "project_completed"
+    | "scraping_progress"
     | "generation_failed"
     | "delivery_completed"
     | "drive_saved"
@@ -192,6 +193,7 @@ export interface Notification {
   message: string;
   read: boolean;
   created_at: string;
+  project_id?: string;
   data?: {
     product_id?: string;
     product_name?: string;

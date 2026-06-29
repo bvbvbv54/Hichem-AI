@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useAuthStore, useAuthHydrated, useNotificationsStore } from "@/lib/store";
 import { Sidebar } from "@/components/shared/sidebar";
 import { Navbar } from "@/components/shared/navbar";
+import { ScrapingIndicator } from "@/components/shared/scraping-indicator";
 import { useUIStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { useSSE, useSSEEvent } from "@/hooks/use-sse";
@@ -83,6 +84,7 @@ function DashboardContent({ children }: { children: React.ReactNode }) {
         <Navbar />
         <main className="p-4 sm:p-6">{children}</main>
       </div>
+      <ScrapingIndicator />
     </div>
   );
 }

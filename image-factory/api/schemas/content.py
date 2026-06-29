@@ -14,6 +14,9 @@ class ProductLinkSchema(BaseModel):
     batch_id: str = ""
     status: str = "pending"
     product_name: str = ""
+    display_title: str = ""
+    source_title: str = ""
+    source_language: str = ""
     category: str = ""
     priority: int = 0
     scraped_image_count: int = 0

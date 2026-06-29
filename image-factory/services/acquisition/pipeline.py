@@ -364,13 +364,13 @@ class AcquisitionPipeline:
 
         for img_url in image_urls:
             if img_url in downloaded_urls:
-                logger.info("skipping_already_downloaded", url=img_url)
                 continue
             path, cached = await self.cache.get_or_download(img_url, job.job_id)
             if path:
                 if path not in seen_paths:
                     seen_paths.add(path)
                     image_paths.append(path)
+                    image_urls.append(img_url)
                     image_hashes.append(hashlib.sha256(path.encode()).hexdigest())
                 downloaded_urls.add(img_url)
                 if not cached:
@@ -387,6 +387,7 @@ class AcquisitionPipeline:
             url=job.url,
             success=len(image_paths) > 0,
             image_paths=image_paths,
+            image_urls=image_urls,
             image_hashes=image_hashes,
             page_title=page_title,
             page_description=page_description,

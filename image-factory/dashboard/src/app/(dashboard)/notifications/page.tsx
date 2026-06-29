@@ -16,6 +16,7 @@ const typeIcons: Record<string, any> = {
   processing_started: Loader2,
   processing_finished: CheckCircle2,
   project_completed: CheckCircle2,
+  scraping_progress: Loader2,
   generation_failed: XCircle,
   delivery_completed: CheckCircle2,
   drive_saved: Cloud,
@@ -28,6 +29,7 @@ const typeColors: Record<string, string> = {
   processing_started: "text-yellow-500",
   processing_finished: "text-success",
   project_completed: "text-success",
+  scraping_progress: "text-blue-500",
   generation_failed: "text-destructive",
   delivery_completed: "text-cyan-500",
   drive_saved: "text-green-500",
@@ -119,19 +121,14 @@ export default function NotificationsPage() {
                         View product →
                       </Link>
                     )}
-                    {n.data?.batch_id && (
+                    {n.project_id && n.project_id !== "default" && (
                       <Link
-                        href={`/projects/${n.data.batch_id}`}
-                        className="text-xs text-primary hover:underline mt-1 ml-2 inline-block"
+                        href={`/projects/${n.project_id}`}
+                        className="text-xs text-primary hover:underline mt-1 inline-block"
                         onClick={(e) => e.stopPropagation()}
                       >
                         View project →
                       </Link>
-                    )}
-                    {n.data?.project_name && (
-                      <span className="text-xs text-muted-foreground mt-1 ml-2 inline-block">
-                        {n.data.project_name}
-                      </span>
                     )}
                   </div>
                   {!n.read && (

@@ -3,7 +3,6 @@ from __future__ import annotations
 import io
 import json
 import os
-import re
 import tempfile
 import uuid
 import zipfile
@@ -24,17 +23,12 @@ from database.models.asset import Asset
 from database.repository import JobRepository
 from services.storage.r2 import get_r2_storage
 from services.notifications import send_notification, NotificationLevel
+from services.utils import sanitize_filename
 from starlette.responses import StreamingResponse
 
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/export", tags=["Export"])
-
-
-def _sanitize(name: str) -> str:
-    name = re.sub(r'[<>:"/\\|?*]', "_", name)
-    name = re.sub(r'\s+', "_", name)
-    return name.strip("._ ")[:120] or "product"
 
 
 async def _collect_product_images(project_id: str) -> list[dict[str, Any]]:
@@ -61,6 +55,7 @@ async def _collect_product_images(project_id: str) -> list[dict[str, Any]]:
                     scraped.append({
                         "filename": asset.filename or "image.png",
                         "r2_url": ameta.get("r2_url", ""),
+                        "r2_key": ameta.get("r2_key", ""),
                         "local_path": asset.file_path,
                     })
 
@@ -77,6 +72,7 @@ async def _collect_product_images(project_id: str) -> list[dict[str, Any]]:
                     entry = {
                         "filename": asset.filename or "image.png",
                         "r2_url": ameta.get("r2_url", ""),
+                        "r2_key": ameta.get("r2_key", ""),
                         "local_path": asset.file_path,
                     }
                     if is_scraped:
@@ -99,31 +95,32 @@ async def _build_zip_stream(
     products_data: list[dict[str, Any]],
 ) -> bytes:
     buffer = io.BytesIO()
-    safe_project = _sanitize(project_name)
+    safe_project = sanitize_filename(project_name)
     r2 = get_r2_storage()
 
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         for prod in products_data:
-            safe_product = _sanitize(prod["product_name"])
+            safe_product = sanitize_filename(prod["product_name"])
             scraped_dir = f"{safe_project}/{safe_product}/scraped-images/"
             ai_dir = f"{safe_project}/{safe_product}/ai-generated/"
 
             for entry in prod["scraped"]:
                 data = await _fetch_image_bytes(entry, r2)
                 if data:
-                    zf.writestr(f"{scraped_dir}{_sanitize(entry['filename'])}", data)
+                    zf.writestr(f"{scraped_dir}{sanitize_filename(entry['filename'])}", data)
 
             if prod["ai_generated"]:
                 for entry in prod["ai_generated"]:
                     data = await _fetch_image_bytes(entry, r2)
                     if data:
-                        zf.writestr(f"{ai_dir}{_sanitize(entry['filename'])}", data)
+                        zf.writestr(f"{ai_dir}{sanitize_filename(entry['filename'])}", data)
 
     return buffer.getvalue()
 
 
 async def _fetch_image_bytes(entry: dict[str, Any], r2: Any) -> bytes | None:
     r2_url = entry.get("r2_url", "")
+    r2_key = entry.get("r2_key", "")
     local_path = entry.get("local_path", "")
     if r2_url:
         try:
@@ -134,6 +131,17 @@ async def _fetch_image_bytes(entry: dict[str, Any], r2: Any) -> bytes | None:
                         return await resp.read()
         except Exception as e:
             logger.warning("r2_fetch_failed", url=r2_url, error=str(e))
+    # If stored URL failed (expired), try generating a fresh presigned URL if we have the key
+    if r2_key:
+        try:
+            fresh_url = r2._public_url(r2_key)
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                async with session.get(fresh_url, timeout=30) as resp:
+                    if resp.status == 200:
+                        return await resp.read()
+        except Exception as e:
+            logger.warning("r2_fresh_url_failed", key=r2_key, error=str(e))
     if local_path and Path(local_path).exists():
         try:
             return Path(local_path).read_bytes()
@@ -153,7 +161,7 @@ async def export_project_zip(
         raise HTTPException(status_code=404, detail="No products found in project")
 
     zip_bytes = await _build_zip_stream(project_name, products_data)
-    safe_name = _sanitize(project_name)
+    safe_name = sanitize_filename(project_name)
 
     return StreamingResponse(
         io.BytesIO(zip_bytes),
@@ -188,14 +196,14 @@ async def export_project_to_drive(
         raise HTTPException(status_code=404, detail="No products found in project")
 
     # Create root folder
-    safe_name = _sanitize(project_name)
+    safe_name = sanitize_filename(project_name)
     root_id = await manager.get_or_create_folder(safe_name)
     uploaded_count = 0
     errors: list[str] = []
     r2 = get_r2_storage()
 
     for prod in products_data:
-        safe_product = _sanitize(prod["product_name"])
+        safe_product = sanitize_filename(prod["product_name"])
         product_folder_id = await manager.get_or_create_folder(safe_product, parent_id=root_id)
 
         scraped_folder_id = await manager.get_or_create_folder("scraped-images", parent_id=product_folder_id)
@@ -211,7 +219,7 @@ async def export_project_to_drive(
                 await manager.upload_file(
                     local_path=tmp_path,
                     drive_folder_id=scraped_folder_id,
-                    filename=_sanitize(entry["filename"]),
+                    filename=sanitize_filename(entry["filename"]),
                     make_public=settings.google_drive_make_public,
                 )
                 os.unlink(tmp_path)
@@ -232,7 +240,7 @@ async def export_project_to_drive(
                     await manager.upload_file(
                         local_path=tmp_path,
                         drive_folder_id=ai_folder_id,
-                        filename=_sanitize(entry["filename"]),
+                        filename=sanitize_filename(entry["filename"]),
                         make_public=settings.google_drive_make_public,
                     )
                     os.unlink(tmp_path)
