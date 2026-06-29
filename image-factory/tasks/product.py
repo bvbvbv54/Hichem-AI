@@ -194,6 +194,16 @@ async def _execute_product_pipeline(self: Any, job_id: str, url: str, project_na
                 failure_detail = f"{domain} is not supported — permanently banned (login wall / CAPTCHA / no anonymous access)"
                 raise RuntimeError(failure_detail)
 
+            # Track scrape attempts to prevent infinite crash loops
+            await _increment_scrape_attempt(url)
+            scrape_meta = await _get_product_link_meta(url)
+            if scrape_meta:
+                attempts = scrape_meta.get("scrape_attempts", 0)
+                if attempts >= 3:
+                    msg = f"Permanently failed after {attempts} consecutive scrape attempts"
+                    await _update_product_link_status(url, "error", error_message=msg, failure_type="max_attempts_exceeded")
+                    raise RuntimeError(msg)
+
             await _update_product_link_status(url, "scraping", job_id=job_id)
 
             # Intelligence: prepare session and request context
@@ -679,38 +689,105 @@ async def _check_project_completion(project_id: str, project_name: str):
         logger.warning("project_completion_check_failed", project_id=project_id, error=str(e))
 
 
+RECOVERY_MAX_ATTEMPTS = 3
+
+
 async def recover_stuck_products(max_age_minutes: int = 30):
-    """Find products stuck in 'scraping' for longer than max_age_minutes and mark them as failed."""
+    """Find products stuck in 'scraping' or 'pending' past threshold and recover them."""
+    recovered = 1
+    total_recovered = 0
+    project_ids: set[str] = set()
+
     try:
         async with async_session() as session:
             cutoff = datetime.utcnow() - timedelta(minutes=max_age_minutes)
-            result = await session.execute(
-                select(ProductLink).where(
-                    ProductLink.status == "scraping",
-                    ProductLink.updated_at < cutoff,
+
+            # Stuck in "scraping" — worker likely crashed mid-task
+            for status_filter in ("scraping", "pending"):
+                result = await session.execute(
+                    select(ProductLink).where(
+                        ProductLink.status == status_filter,
+                        ProductLink.updated_at < cutoff,
+                    )
                 )
-            )
-            stuck = list(result.scalars().all())
-            if not stuck:
-                logger.info("no_stuck_products_found")
-                return 0
+                for link in list(result.scalars().all()):
+                    try:
+                        meta = dict(link.meta or {})
+                        attempts = meta.get("scrape_attempts", 0)
+                        if attempts >= RECOVERY_MAX_ATTEMPTS:
+                            link.status = "error"
+                            link.error_message = f"Auto-recovered: failed after {attempts} scrape attempts"
+                            link.failure_type = "max_attempts_exceeded"
+                        else:
+                            link.status = "error"
+                            link.error_message = f"Auto-recovered: stuck in '{status_filter}' since {link.updated_at.isoformat()}"
+                            link.failure_type = "timeout"
+                        link.updated_at = datetime.utcnow()
+                        link.completed_at = datetime.utcnow()
+                        if link.project_id:
+                            project_ids.add(link.project_id)
+                        session.add(link)
+                        total_recovered += 1
+                    except Exception as e:
+                        logger.warning("stuck_recovery_failed", product_id=link.id, status=link.status, error=str(e))
 
-            count = 0
-            for link in stuck:
+            if total_recovered > 0:
+                await session.commit()
+
+            # Check project completion for recovered products
+            for pid in project_ids:
                 try:
-                    link.status = "error"
-                    link.error_message = f"Auto-recovered: stuck in 'scraping' since {link.updated_at.isoformat()}"
-                    link.failure_type = "timeout"
-                    link.updated_at = datetime.utcnow()
-                    link.completed_at = datetime.utcnow()
-                    session.add(link)
-                    count += 1
+                    total_q = await session.execute(
+                        select(func.count(ProductLink.id)).where(ProductLink.project_id == pid)
+                    )
+                    total = total_q.scalar() or 0
+                    terminal_q = await session.execute(
+                        select(func.count(ProductLink.id)).where(
+                            ProductLink.project_id == pid,
+                            ProductLink.status.in_(["scraped", "completed", "failed", "error", "skipped"]),
+                        )
+                    )
+                    terminal = terminal_q.scalar() or 0
+                    if total > 0 and terminal >= total:
+                        scraped_q = await session.execute(
+                            select(func.count(ProductLink.id)).where(
+                                ProductLink.project_id == pid,
+                                ProductLink.status.in_(["scraped", "completed"]),
+                            )
+                        )
+                        scraped = scraped_q.scalar() or 0
+                        failed_q = await session.execute(
+                            select(func.count(ProductLink.id)).where(
+                                ProductLink.project_id == pid,
+                                ProductLink.status.in_(["failed", "error"]),
+                            )
+                        )
+                        failed = failed_q.scalar() or 0
+                        logger.info("project_completed_via_recovery", project_id=pid, total=total, scraped=scraped, failed=failed)
+                        from services.notifications import send_notification, NotificationLevel
+                        from services.event_bus import publish, PipelineEvent, EventType
+                        await send_notification(
+                            user_id="",
+                            title="Project Scraping Complete",
+                            message=f"Project finished scraping — {scraped} succeeded, {failed} failed",
+                            event_type="project_completed",
+                            level=NotificationLevel.SUCCESS if failed == 0 else NotificationLevel.WARNING,
+                            project_id=pid,
+                            data={"project_id": pid, "total": total, "succeeded": scraped, "failed": failed},
+                        )
+                        await publish(PipelineEvent(
+                            event_type=EventType.NOTIFICATION,
+                            job_id="",
+                            data={"type": "project_completed", "project_id": pid},
+                        ))
                 except Exception as e:
-                    logger.warning("stuck_recovery_failed", product_id=link.id, error=str(e))
+                    logger.warning("project_completion_after_recovery_failed", project_id=pid, error=str(e))
 
-            await session.commit()
-            logger.info("stuck_products_recovered", count=count)
-            return count
+            if total_recovered > 0:
+                logger.info("stuck_products_recovered", count=total_recovered)
+            else:
+                logger.info("no_stuck_products_found")
+            return total_recovered
     except Exception as e:
         logger.error("stuck_recovery_error", error=str(e))
         return 0
@@ -720,6 +797,37 @@ async def recover_stuck_products(max_age_minutes: int = 30):
 def recover_stuck(self):
     """Celery periodic task to auto-recover stuck products."""
     run_async(recover_stuck_products())
+
+
+async def _get_product_link_meta(url: str) -> dict:
+    try:
+        async with async_session() as session:
+            url_hash = hashlib.sha256(url.encode()).hexdigest()
+            result = await session.execute(select(ProductLink.meta).where(ProductLink.url_hash == url_hash))
+            row = result.one_or_none()
+            return dict(row[0]) if row and row[0] else {}
+    except Exception:
+        return {}
+
+
+async def _increment_scrape_attempt(url: str) -> int:
+    try:
+        async with async_session() as session:
+            url_hash = hashlib.sha256(url.encode()).hexdigest()
+            result = await session.execute(select(ProductLink).where(ProductLink.url_hash == url_hash))
+            link = result.scalar_one_or_none()
+            if not link:
+                return 0
+            meta = dict(link.meta or {})
+            attempts = meta.get("scrape_attempts", 0) + 1
+            meta["scrape_attempts"] = attempts
+            await session.execute(
+                sql_update(ProductLink).where(ProductLink.id == link.id).values(meta=meta)
+            )
+            await session.commit()
+            return attempts
+    except Exception:
+        return 0
 
 
 async def _get_product_link_project_id(url: str) -> str:
